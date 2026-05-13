@@ -4,11 +4,6 @@ Official Implementation for Equiangular Prototype Alignment for Unsupervised Dom
 
 **Authors**: Akash Sharma, Arunima Sarkar, Mohanasankar Sivaprakasam
 
-# EPA Medical UDA
-
-This repository contains a self-contained medical unsupervised domain adaptation setup for MR <-> CT semantic segmentation. It is based on MIC/MMSegmentation code, but the runnable project layout is now at the repository root.
-
-The main experiment configs are in `configs/medical/`.
 
 ## Repository Layout
 
@@ -27,9 +22,13 @@ The main experiment configs are in `configs/medical/`.
 `-- requirements.txt
 ```
 
+## Dataset and Pretrained Models
+
+
+
 The medical datalists use paths relative to `data/datalist/` into
 `data/data_np/`, so the project can run without the original external dataset
-location.
+location. The main experiment configs are in `configs/medical/`.
 
 ## Environment
 
@@ -182,6 +181,5 @@ For configs that evaluate multiple domains, the validation results are reported 
 ## Notes
 
 - `configs/medical/*segformer*` require `pretrained/mit_b5_mmseg.pth`.
-- `configs/medical/*deeplabv2*` require the ResNet-50 V1c checkpoint through MMCV's `open-mmlab://` checkpoint mechanism.
 - Medical classes are `background`, `Myo`, `LAC`, `LVC`, and `AA`.
 - `work_dirs/` and generated configs are run artifacts and are not required to start a new experiment.

@@ -113,6 +113,55 @@ class DACS(UDADecorator):
             self.etf_contrastive_temperature)
         self.enable_etf_contrastive_target = \
             self.etf_contrastive_target_lambda > 0
+        self.prototype_mode = cfg.get('prototype_mode', 'none')
+        self.dynamic_proto_momentum = cfg.get('dynamic_proto_momentum', 0.99)
+        self.dynamic_proto_min_pixels = cfg.get('dynamic_proto_min_pixels',
+                                                16)
+        self.dynamic_proto_source_lambda = cfg.get(
+            'dynamic_proto_source_lambda', 0.0)
+        self.dynamic_proto_target_lambda = cfg.get(
+            'dynamic_proto_target_lambda', 0.0)
+        self.dynamic_proto_target_start_iter = cfg.get(
+            'dynamic_proto_target_start_iter', self.mix_start_iter)
+        self.dynamic_proto_temperature = cfg.get(
+            'dynamic_proto_temperature', 0.07)
+        self.dynamic_proto_target_temperature = cfg.get(
+            'dynamic_proto_target_temperature',
+            self.dynamic_proto_temperature)
+        self.dynamic_proto_ignore_background = cfg.get(
+            'dynamic_proto_ignore_background', False)
+        self.enable_dynamic_proto = self.prototype_mode == 'source_ema' and (
+            self.dynamic_proto_source_lambda > 0
+            or self.dynamic_proto_target_lambda > 0)
+        self.enable_dynamic_proto_source = self.enable_dynamic_proto and \
+            self.dynamic_proto_source_lambda > 0
+        self.enable_dynamic_proto_target = self.enable_dynamic_proto and \
+            self.dynamic_proto_target_lambda > 0
+        self.dynamic_proto_feature_dim = cfg.get('dynamic_proto_feature_dim',
+                                                 None)
+        decode_head_cfg = cfg['model'].get('decode_head', {})
+        if self.dynamic_proto_feature_dim is None:
+            decoder_params = decode_head_cfg.get('decoder_params', {})
+            self.dynamic_proto_feature_dim = decoder_params.get('embed_dim')
+        if self.dynamic_proto_feature_dim is None:
+            self.dynamic_proto_feature_dim = decode_head_cfg.get('channels')
+        if self.enable_dynamic_proto and self.dynamic_proto_feature_dim:
+            self.register_buffer(
+                'source_prototypes',
+                torch.zeros((self.num_classes,
+                             int(self.dynamic_proto_feature_dim))))
+            self.register_buffer('source_proto_valid',
+                                 torch.zeros((self.num_classes, ),
+                                             dtype=torch.bool))
+            self.register_buffer('source_proto_seen',
+                                 torch.zeros((self.num_classes, ),
+                                             dtype=torch.long))
+        else:
+            self.register_buffer('source_prototypes', torch.empty(0))
+            self.register_buffer('source_proto_valid',
+                                 torch.empty(0, dtype=torch.bool))
+            self.register_buffer('source_proto_seen',
+                                 torch.empty(0, dtype=torch.long))
         ema_cfg = deepcopy(cfg['model'])
         if not self.source_only:
             self.ema_model = build_segmentor(ema_cfg)
@@ -198,6 +247,185 @@ class DACS(UDADecorator):
                 means[cls] = feat_flat[mask].mean(dim=0)
                 present[cls] = True
         return means, present
+
+    def _compute_class_feature_means_mask_counts(self,
+                                                 feat_map,
+                                                 gt_semantic_seg,
+                                                 pixel_weight=None,
+                                                 min_pixels=1):
+        num_classes = self.num_classes
+        ignore_index = self.get_model().decode_head.ignore_index
+        if gt_semantic_seg.dim() == 3:
+            gt_semantic_seg = gt_semantic_seg.unsqueeze(1)
+        if gt_semantic_seg.shape[2:] != feat_map.shape[2:]:
+            gt_resized = F.interpolate(
+                gt_semantic_seg.float(),
+                size=feat_map.shape[2:],
+                mode='nearest').long()
+        else:
+            gt_resized = gt_semantic_seg
+
+        weight_flat = None
+        if pixel_weight is not None:
+            if pixel_weight.dim() == 3:
+                pixel_weight = pixel_weight.unsqueeze(1)
+            if pixel_weight.shape[2:] != feat_map.shape[2:]:
+                pixel_weight = F.interpolate(
+                    pixel_weight.float(),
+                    size=feat_map.shape[2:],
+                    mode='nearest')
+            weight_flat = pixel_weight.squeeze(1).reshape(-1)
+
+        gt_flat = gt_resized.squeeze(1).reshape(-1)
+        feat_flat = feat_map.permute(0, 2, 3, 1).reshape(-1,
+                                                         feat_map.shape[1])
+
+        means = torch.zeros((num_classes, feat_map.shape[1]),
+                            device=feat_map.device)
+        present = torch.zeros((num_classes, ), device=feat_map.device,
+                              dtype=torch.bool)
+        counts = torch.zeros((num_classes, ), device=feat_map.device,
+                             dtype=torch.long)
+        for cls in range(num_classes):
+            if cls == ignore_index:
+                continue
+            if self.dynamic_proto_ignore_background and cls == 0:
+                continue
+            mask = gt_flat == cls
+            if weight_flat is not None:
+                mask = mask & (weight_flat > 0)
+            count = int(mask.sum().item())
+            counts[cls] = count
+            if count >= min_pixels:
+                means[cls] = feat_flat[mask].mean(dim=0)
+                present[cls] = True
+        return means, present, counts
+
+    def _maybe_init_source_prototypes(self, feat_map):
+        if self.source_prototypes.numel() > 0 and \
+                self.source_prototypes.shape[1] == feat_map.shape[1]:
+            return
+        feature_dim = feat_map.shape[1]
+        device = feat_map.device
+        self.source_prototypes = torch.zeros(
+            (self.num_classes, feature_dim), device=device)
+        self.source_proto_valid = torch.zeros(
+            (self.num_classes, ), device=device, dtype=torch.bool)
+        self.source_proto_seen = torch.zeros(
+            (self.num_classes, ), device=device, dtype=torch.long)
+
+    def _update_source_ema_prototypes(self, feat_map, gt_semantic_seg):
+        if not self.enable_dynamic_proto or feat_map is None:
+            return
+        self._maybe_init_source_prototypes(feat_map)
+        with torch.no_grad():
+            means, present, _ = self._compute_class_feature_means_mask_counts(
+                feat_map.detach(),
+                gt_semantic_seg,
+                min_pixels=self.dynamic_proto_min_pixels)
+            present_classes = torch.nonzero(
+                present, as_tuple=False).squeeze(1)
+            momentum = float(self.dynamic_proto_momentum)
+            for cls in present_classes.tolist():
+                mean = F.normalize(means[cls], p=2, dim=0)
+                if not self.source_proto_valid[cls]:
+                    self.source_prototypes[cls] = mean
+                    self.source_proto_valid[cls] = True
+                else:
+                    updated = momentum * self.source_prototypes[cls] + \
+                        (1 - momentum) * mean
+                    self.source_prototypes[cls] = F.normalize(
+                        updated, p=2, dim=0)
+                self.source_proto_seen[cls] += 1
+
+    def _dynamic_proto_stats(self):
+        if self.source_prototypes.numel() == 0:
+            return {
+                'valid_classes': 0.0,
+                'mean_norm': 0.0,
+                'min_pairwise_cos': 0.0,
+                'mean_pairwise_cos': 0.0,
+                'max_pairwise_cos': 0.0,
+            }
+        valid = self.source_proto_valid
+        prototypes = self.source_prototypes[valid]
+        if prototypes.numel() == 0:
+            return {
+                'valid_classes': 0.0,
+                'mean_norm': 0.0,
+                'min_pairwise_cos': 0.0,
+                'mean_pairwise_cos': 0.0,
+                'max_pairwise_cos': 0.0,
+            }
+        norms = torch.norm(prototypes, p=2, dim=1)
+        stats = {
+            'valid_classes': float(valid.sum().item()),
+            'mean_norm': float(norms.mean().detach().item()),
+            'min_pairwise_cos': 0.0,
+            'mean_pairwise_cos': 0.0,
+            'max_pairwise_cos': 0.0,
+        }
+        if prototypes.shape[0] > 1:
+            prototypes = F.normalize(prototypes, p=2, dim=1)
+            cos = torch.matmul(prototypes, prototypes.t())
+            off_diag = cos[~torch.eye(
+                cos.shape[0], dtype=torch.bool, device=cos.device)]
+            stats.update({
+                'min_pairwise_cos': float(off_diag.min().detach().item()),
+                'mean_pairwise_cos': float(off_diag.mean().detach().item()),
+                'max_pairwise_cos': float(off_diag.max().detach().item()),
+            })
+        return stats
+
+    def _calc_dynamic_proto_loss(self,
+                                 feat_map,
+                                 semantic_seg,
+                                 *,
+                                 pixel_weight=None,
+                                 use_target_temp=False):
+        if feat_map is None or self.source_prototypes.numel() == 0:
+            return None, {'loss_dynamic_proto': 0.0}
+        means, present, _ = self._compute_class_feature_means_mask_counts(
+            feat_map,
+            semantic_seg,
+            pixel_weight=pixel_weight,
+            min_pixels=self.dynamic_proto_min_pixels)
+        candidate_mask = self.source_proto_valid.clone()
+        if self.dynamic_proto_ignore_background and candidate_mask.numel() > 0:
+            candidate_mask[0] = False
+        present_classes = torch.nonzero(
+            present & candidate_mask, as_tuple=False).squeeze(1)
+        candidate_classes = torch.nonzero(
+            candidate_mask, as_tuple=False).squeeze(1)
+        if present_classes.numel() == 0 or candidate_classes.numel() == 0:
+            return None, {'loss_dynamic_proto': 0.0}
+
+        prototypes = F.normalize(
+            self.source_prototypes[candidate_classes].detach(), p=2, dim=1)
+        means = F.normalize(means[present_classes], p=2, dim=1)
+        target_positions = []
+        for cls in present_classes.tolist():
+            match = torch.nonzero(
+                candidate_classes == cls, as_tuple=False).squeeze(1)
+            if match.numel() > 0:
+                target_positions.append(match[0])
+        if len(target_positions) == 0:
+            return None, {'loss_dynamic_proto': 0.0}
+        targets = torch.stack(target_positions).to(feat_map.device)
+
+        if use_target_temp:
+            temperature = max(float(self.dynamic_proto_target_temperature),
+                              1e-6)
+            weight = self.dynamic_proto_target_lambda
+        else:
+            temperature = max(float(self.dynamic_proto_temperature), 1e-6)
+            weight = self.dynamic_proto_source_lambda
+
+        logits = torch.matmul(means, prototypes.t()) / temperature
+        loss = weight * F.cross_entropy(logits, targets)
+        loss, log_vars = self._parse_losses({'loss_dynamic_proto': loss})
+        log_vars.pop('loss', None)
+        return loss, log_vars
 
     def _calc_etf_contrastive_loss(self, feat_map, gt_semantic_seg, *,
                                    use_target_temp=False):
@@ -514,11 +742,17 @@ class DACS(UDADecorator):
         if self.enable_etf_contrastive or self.enable_etf_contrastive_target:
             self._maybe_init_etf_prototypes(src_prelogit_detached,
                                             gt_semantic_seg)
+        if self.enable_dynamic_proto:
+            self._update_source_ema_prototypes(src_prelogit_detached,
+                                               gt_semantic_seg)
+            log_vars.update(
+                add_prefix(self._dynamic_proto_stats(), 'dynamic_proto'))
         seg_debug['Source'] = self.get_model().debug_output
         clean_loss, clean_log_vars = self._parse_losses(clean_losses)
         log_vars.update(clean_log_vars)
         clean_loss.backward(
-            retain_graph=self.enable_fdist or self.enable_etf_contrastive)
+            retain_graph=self.enable_fdist or self.enable_etf_contrastive
+            or self.enable_dynamic_proto_source)
         if self.print_grad_magnitude:
             params = self.get_model().backbone.parameters()
             seg_grads = [
@@ -535,6 +769,16 @@ class DACS(UDADecorator):
             if etf_loss is not None:
                 etf_loss.backward()
                 del etf_loss
+
+        # Source dynamic prototype loss. Source anchors are updated only from
+        # source GT features, then detached as class anchors for this loss.
+        if self.enable_dynamic_proto_source:
+            proto_loss, proto_log = self._calc_dynamic_proto_loss(
+                src_prelogit, gt_semantic_seg)
+            log_vars.update(add_prefix(proto_log, 'src'))
+            if proto_loss is not None:
+                proto_loss.backward()
+                del proto_loss
 
         # ImageNet feature distance
         if self.enable_fdist:
@@ -576,12 +820,22 @@ class DACS(UDADecorator):
 
             do_mix = self.local_iter >= self.mix_start_iter
 
-            # Target ETF contrastive loss starts after the self-training warmup.
-            if self.enable_etf_contrastive_target and do_mix:
+            do_dynamic_proto_target = self.local_iter >= \
+                self.dynamic_proto_target_start_iter
+
+            # Target prototype losses start after their warmup.
+            if (self.enable_etf_contrastive_target and do_mix) or (
+                    self.enable_dynamic_proto_target
+                    and do_dynamic_proto_target):
                 feats = self.get_model().extract_feat(target_img)
                 _ = self.get_model().decode_head(feats)
                 tgt_prelogit = getattr(self.get_model().decode_head,
                                        'latest_linear_pred_input', None)
+            else:
+                tgt_prelogit = None
+
+            # Target ETF contrastive loss starts after the self-training warmup.
+            if self.enable_etf_contrastive_target and do_mix:
                 tgt_loss, tgt_log = self._calc_etf_contrastive_loss(
                     tgt_prelogit,
                     pseudo_label,
@@ -590,6 +844,19 @@ class DACS(UDADecorator):
                 if tgt_loss is not None:
                     tgt_loss.backward()
                     del tgt_loss
+
+            # Target dynamic prototype loss explicitly aligns target class
+            # means to the source EMA anchors. Target never updates anchors.
+            if self.enable_dynamic_proto_target and do_dynamic_proto_target:
+                tgt_proto_loss, tgt_proto_log = self._calc_dynamic_proto_loss(
+                    tgt_prelogit,
+                    pseudo_label,
+                    pixel_weight=pseudo_weight,
+                    use_target_temp=True)
+                log_vars.update(add_prefix(tgt_proto_log, 'tgt'))
+                if tgt_proto_loss is not None:
+                    tgt_proto_loss.backward()
+                    del tgt_proto_loss
 
             mixed_img, mixed_lbl = [None] * batch_size, [None] * batch_size
             mixed_seg_weight = pseudo_weight.clone()
