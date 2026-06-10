@@ -111,6 +111,8 @@ class DACS(UDADecorator):
         self.etf_contrastive_target_temperature = cfg.get(
             'etf_contrastive_target_temperature',
             self.etf_contrastive_temperature)
+        self.etf_contrastive_target_start_iter = cfg.get(
+            'etf_contrastive_target_start_iter', self.mix_start_iter)
         self.enable_etf_contrastive_target = \
             self.etf_contrastive_target_lambda > 0
         self.prototype_mode = cfg.get('prototype_mode', 'none')
@@ -822,9 +824,11 @@ class DACS(UDADecorator):
 
             do_dynamic_proto_target = self.local_iter >= \
                 self.dynamic_proto_target_start_iter
+            do_etf_proto_target = self.local_iter >= \
+                self.etf_contrastive_target_start_iter
 
             # Target prototype losses start after their warmup.
-            if (self.enable_etf_contrastive_target and do_mix) or (
+            if (self.enable_etf_contrastive_target and do_etf_proto_target) or (
                     self.enable_dynamic_proto_target
                     and do_dynamic_proto_target):
                 feats = self.get_model().extract_feat(target_img)
@@ -834,8 +838,8 @@ class DACS(UDADecorator):
             else:
                 tgt_prelogit = None
 
-            # Target ETF contrastive loss starts after the self-training warmup.
-            if self.enable_etf_contrastive_target and do_mix:
+            # Target ETF contrastive loss starts after its target warmup.
+            if self.enable_etf_contrastive_target and do_etf_proto_target:
                 tgt_loss, tgt_log = self._calc_etf_contrastive_loss(
                     tgt_prelogit,
                     pseudo_label,

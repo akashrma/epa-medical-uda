@@ -174,10 +174,21 @@ def register_prelogit_hook(model):
     base = model.module if hasattr(model, 'module') else model
     holder = {}
 
-    def hook(_, inputs, __):
-        holder['features'] = inputs[0].detach()
+    linear_pred = getattr(base.decode_head, 'linear_pred', None)
+    use_decode_head_fallback = base.decode_head.__class__.__name__ == 'DLV2Head'
+    if linear_pred is not None and not use_decode_head_fallback:
+        def hook(_, inputs, __):
+            holder['features'] = inputs[0].detach()
 
-    handle = base.decode_head.linear_pred.register_forward_hook(hook)
+        handle = linear_pred.register_forward_hook(hook)
+        return holder, handle
+
+    def hook(module, _, __):
+        features = getattr(module, 'latest_linear_pred_input', None)
+        if features is not None:
+            holder['features'] = features.detach()
+
+    handle = base.decode_head.register_forward_hook(hook)
     return holder, handle
 
 
@@ -187,6 +198,14 @@ def forward_model(model, data, device='cuda'):
             _ = model(return_loss=False, rescale=True, **data)
         else:
             raise RuntimeError('CPU inference path is not implemented.')
+
+
+def captured_prelogit_features(holder, model):
+    features = holder.get('features')
+    if features is not None:
+        return features
+    base = model.module if hasattr(model, 'module') else model
+    return getattr(base.decode_head, 'latest_linear_pred_input', None)
 
 
 def load_gt(dataset, idx):
@@ -414,12 +433,12 @@ def get_feature_hw(cfg, checkpoint, dataset, data_loader, device):
     holder, handle = register_prelogit_hook(model)
     data = next(iter(data_loader))
     forward_model(model, data, device=device)
-    features = holder.get('features')
+    features = captured_prelogit_features(holder, model)
     handle.remove()
     del model
     torch.cuda.empty_cache()
     if features is None:
-        raise RuntimeError('Failed to capture decode_head.linear_pred input.')
+        raise RuntimeError('Failed to capture pre-logit features.')
     return tuple(features.shape[-2:])
 
 
@@ -435,9 +454,9 @@ def extract_checkpoint_features(cfg, checkpoint, dataset, data_loader,
         if idx not in sample_plan:
             continue
         forward_model(model, data, device=device)
-        features = holder.get('features')
+        features = captured_prelogit_features(holder, model)
         if features is None:
-            raise RuntimeError('Hook did not capture pre-logit features.')
+            raise RuntimeError('Failed to capture pre-logit features.')
         fmap = features[0].detach().float().cpu().numpy().transpose(1, 2, 0)
         coords = sample_plan[idx]
         for y, x, cls_id in coords:

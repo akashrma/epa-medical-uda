@@ -36,6 +36,7 @@ class DLV2Head(BaseDecodeHead):
         # for f in inputs:
         #     mmcv.print_log(f'{f.shape}', 'mmseg')
         x = self._transform_inputs(inputs)
+        self.latest_linear_pred_input = x
         aspp_outs = self.aspp_modules(x)
         out = aspp_outs[0]
         for i in range(len(aspp_outs) - 1):
