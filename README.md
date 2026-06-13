@@ -24,7 +24,7 @@ Official Implementation for Equiangular Prototype Alignment for Unsupervised Dom
 
 ## Dataset and Pretrained Models
 
-
+See this link: https://drive.google.com/drive/folders/1BcGtDlH80o15i-A_VTL-P6UPHNJnaI5D?usp=sharing for pretrained models and dataset.
 
 The medical datalists use paths relative to `data/datalist/` into
 `data/data_np/`, so the project can run without the original external dataset
