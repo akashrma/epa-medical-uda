@@ -1,12 +1,11 @@
 # Obtained from: https://github.com/open-mmlab/mmsegmentation/tree/v0.16.0
 # Modifications: Support crop_pseudo_margins
 
+import mmengine
+import numpy as np
 import os.path as osp
 import tempfile
-
-import mmcv
-import numpy as np
-from mmcv.utils import print_log
+from mmengine.logging import print_log
 from PIL import Image
 
 from .builder import DATASETS
@@ -94,9 +93,9 @@ class CityscapesDataset(CustomDataset):
             list[str: str]: result txt files which contains corresponding
             semantic segmentation images.
         """
-        mmcv.mkdir_or_exist(imgfile_prefix)
+        mmengine.mkdir_or_exist(imgfile_prefix)
         result_files = []
-        prog_bar = mmcv.ProgressBar(len(self))
+        prog_bar = mmengine.ProgressBar(len(self))
         for idx in range(len(self)):
             result = results[idx]
             if to_label_id:
@@ -237,7 +236,7 @@ class CityscapesDataset(CustomDataset):
 
         # when evaluating with official cityscapesscripts,
         # **_gtFine_labelIds.png is used
-        for seg_map in mmcv.scandir(
+        for seg_map in mmengine.scandir(
                 self.ann_dir, 'gtFine_labelIds.png', recursive=True):
             seg_map_list.append(osp.join(self.ann_dir, seg_map))
             pred_list.append(CSEval.getPrediction(CSEval.args, seg_map))

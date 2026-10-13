@@ -2,8 +2,9 @@
 # Modifications: Support override_scale in Resize
 
 import mmcv
+import mmengine
 import numpy as np
-from mmcv.utils import deprecated_api_warning, is_tuple_of
+from mmengine.utils import deprecated_api_warning, is_tuple_of
 from numpy import random
 
 from ..builder import PIPELINES
@@ -57,7 +58,7 @@ class Resize(object):
                 self.img_scale = img_scale
             else:
                 self.img_scale = [img_scale]
-            assert mmcv.is_list_of(self.img_scale, tuple)
+            assert mmengine.is_list_of(self.img_scale, tuple)
 
         if ratio_range is not None:
             # mode 1: given img_scale=None and a range of image ratio
@@ -85,7 +86,7 @@ class Resize(object):
                 ``scale_idx`` is the selected index in the given candidates.
         """
 
-        assert mmcv.is_list_of(img_scales, tuple)
+        assert mmengine.is_list_of(img_scales, tuple)
         scale_idx = np.random.randint(len(img_scales))
         img_scale = img_scales[scale_idx]
         return img_scale, scale_idx
@@ -105,7 +106,7 @@ class Resize(object):
                 to be consistent with :func:`random_select`.
         """
 
-        assert mmcv.is_list_of(img_scales, tuple) and len(img_scales) == 2
+        assert mmengine.is_list_of(img_scales, tuple) and len(img_scales) == 2
         img_scale_long = [max(s) for s in img_scales]
         img_scale_short = [min(s) for s in img_scales]
         long_edge = np.random.randint(

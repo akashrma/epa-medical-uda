@@ -1,8 +1,7 @@
 # Obtained from: https://github.com/open-mmlab/mmsegmentation/tree/v0.16.0
 
 import logging
-
-from mmcv.utils import get_logger
+from mmengine.logging import MMLogger
 
 
 def get_root_logger(log_file=None, log_level=logging.INFO):
@@ -24,6 +23,12 @@ def get_root_logger(log_file=None, log_level=logging.INFO):
         logging.Logger: The root logger.
     """
 
-    logger = get_logger(name='mmseg', log_file=log_file, log_level=log_level)
+    if MMLogger.check_instance_created('mmseg'):
+        return MMLogger.get_instance('mmseg')
+    logger = MMLogger.get_instance(
+        name='mmseg',
+        logger_name='mmseg',
+        log_file=log_file,
+        log_level=log_level)
 
     return logger

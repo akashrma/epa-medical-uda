@@ -2,14 +2,21 @@
 # Modifications:
 # - Override palette, classes, and state dict keys
 
+from copy import deepcopy
+
 import matplotlib.pyplot as plt
 import mmcv
 import torch
-from mmcv.parallel import collate, scatter
-from mmcv.runner import load_checkpoint
+from mmengine.config import Config
 
+from mmseg.apis.checkpoint import (load_student_checkpoint,
+                                   set_checkpoint_metadata)
+from mmseg.datasets import build_dataset
+from mmseg.datasets.collate import uda_collate
 from mmseg.datasets.pipelines import Compose
+from mmseg.engine.config import evaluation_dataset_config, student_config
 from mmseg.models import build_segmentor
+from mmseg.models.data_preprocessor import UDADataPreprocessor
 
 
 def init_segmentor(config,
@@ -21,7 +28,7 @@ def init_segmentor(config,
     """Initialize a segmentor from config file.
 
     Args:
-        config (str or :obj:`mmcv.Config`): Config file path or the config
+        config (str or :obj:`Config`): Config file path or the config
             object.
         checkpoint (str, optional): Checkpoint path. If left as None, the model
             will not load any weights.
@@ -31,23 +38,19 @@ def init_segmentor(config,
         nn.Module: The constructed segmentor.
     """
     if isinstance(config, str):
-        config = mmcv.Config.fromfile(config)
-    elif not isinstance(config, mmcv.Config):
+        config = Config.fromfile(config)
+    elif not isinstance(config, Config):
         raise TypeError('config must be a filename or Config object, '
                         'but got {}'.format(type(config)))
-    config.model.pretrained = None
-    config.model.train_cfg = None
-    model = build_segmentor(config.model, test_cfg=config.get('test_cfg'))
-    if checkpoint is not None:
-        checkpoint = load_checkpoint(
-            model,
-            checkpoint,
-            map_location='cpu',
-            revise_keys=revise_checkpoint)
-        model.CLASSES = checkpoint['meta']['CLASSES'] if classes is None \
-            else classes
-        model.PALETTE = checkpoint['meta']['PALETTE'] if palette is None \
-            else palette
+    config = deepcopy(config)
+    model_cfg = student_config(config)
+    model_cfg['pretrained'] = None
+    model_cfg['train_cfg'] = None
+    model = build_segmentor(model_cfg)
+    loaded = load_student_checkpoint(model, checkpoint, revise_checkpoint) \
+        if checkpoint is not None else None
+    dataset = build_dataset(evaluation_dataset_config(config))
+    set_checkpoint_metadata(model, loaded, dataset, classes, palette)
     model.cfg = config  # save the config in the model for convenience
     model.to(device)
     model.eval()
@@ -94,18 +97,15 @@ def inference_segmentor(model, img):
     """
     cfg = model.cfg
     device = next(model.parameters()).device  # model device
-    # build the data pipeline
-    test_pipeline = [LoadImage()] + cfg.data.test.pipeline[1:]
-    test_pipeline = Compose(test_pipeline)
-    # prepare data
-    data = dict(img=img)
-    data = test_pipeline(data)
-    data = collate([data], samples_per_gpu=1)
-    if next(model.parameters()).is_cuda:
-        # scatter to specified GPU
-        data = scatter(data, [device])[0]
+    pipeline = evaluation_dataset_config(cfg)['pipeline']
+    if isinstance(img, str) and img.endswith('.npy'):
+        data = dict(
+            img_info=dict(filename=img), img_prefix=None, seg_fields=[])
+        data = Compose(pipeline)(data)
     else:
-        data['img_metas'] = [i.data[0] for i in data['img_metas']]
+        # Ordinary images/arrays retain the raw BGR image API.
+        data = Compose([LoadImage()] + pipeline[1:])(dict(img=img))
+    data = UDADataPreprocessor().to(device)(uda_collate([data]))
 
     # forward the model
     with torch.no_grad():

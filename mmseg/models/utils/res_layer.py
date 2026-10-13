@@ -1,7 +1,7 @@
 # Obtained from: https://github.com/open-mmlab/mmsegmentation/tree/v0.16.0
 
 from mmcv.cnn import build_conv_layer, build_norm_layer
-from mmcv.runner import Sequential
+from mmengine.model import Sequential
 from torch import nn as nn
 
 

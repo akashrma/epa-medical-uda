@@ -1,10 +1,10 @@
 # Obtained from: https://github.com/open-mmlab/mmsegmentation/tree/v0.16.0
 
-import os.path as osp
 import io
-
 import mmcv
 import numpy as np
+import os.path as osp
+from mmengine.fileio import FileClient
 
 from ..builder import PIPELINES
 
@@ -53,7 +53,7 @@ class LoadImageFromFile(object):
         """
 
         if self.file_client is None:
-            self.file_client = mmcv.FileClient(**self.file_client_args)
+            self.file_client = FileClient(**self.file_client_args)
 
         if results.get('img_prefix') is not None:
             filename = osp.join(results['img_prefix'],
@@ -130,7 +130,7 @@ class LoadNpyImageFromFile(object):
 
     def __call__(self, results):
         if self.file_client is None:
-            self.file_client = mmcv.FileClient(**self.file_client_args)
+            self.file_client = FileClient(**self.file_client_args)
 
         if results.get('img_prefix') is not None:
             filename = osp.join(results['img_prefix'],
@@ -231,7 +231,7 @@ class LoadNpzSliceFromFile(object):
 
     def __call__(self, results):
         if self.file_client is None:
-            self.file_client = mmcv.FileClient(**self.file_client_args)
+            self.file_client = FileClient(**self.file_client_args)
 
         if results.get('img_prefix') is not None:
             filename = osp.join(results['img_prefix'],
@@ -314,7 +314,7 @@ class LoadNpyAnnotations(object):
 
     def __call__(self, results):
         if self.file_client is None:
-            self.file_client = mmcv.FileClient(**self.file_client_args)
+            self.file_client = FileClient(**self.file_client_args)
 
         if results.get('seg_prefix', None) is not None:
             filename = osp.join(results['seg_prefix'],
@@ -384,7 +384,7 @@ class LoadAnnotations(object):
         """
 
         if self.file_client is None:
-            self.file_client = mmcv.FileClient(**self.file_client_args)
+            self.file_client = FileClient(**self.file_client_args)
 
         if results.get('seg_prefix', None) is not None:
             filename = osp.join(results['seg_prefix'],

@@ -1,12 +1,11 @@
 # Obtained from: https://github.com/open-mmlab/mmsegmentation/tree/v0.16.0
 
-import warnings
-
 import torch.nn as nn
 import torch.utils.checkpoint as cp
+import warnings
 from mmcv.cnn import build_conv_layer, build_norm_layer, build_plugin_layer
-from mmcv.runner import BaseModule
-from mmcv.utils.parrots_wrapper import _BatchNorm
+from mmengine.model import BaseModule
+from torch.nn.modules.batchnorm import _BatchNorm
 
 from ..builder import BACKBONES
 from ..utils import ResLayer

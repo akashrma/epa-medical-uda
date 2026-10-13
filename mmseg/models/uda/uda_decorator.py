@@ -8,8 +8,7 @@
 # ---------------------------------------------------------------
 
 from copy import deepcopy
-
-from mmcv.parallel import MMDistributedDataParallel
+from mmengine.model import is_model_wrapper
 
 from mmseg.models import BaseSegmentor, build_segmentor
 
@@ -24,7 +23,7 @@ def get_module(module):
     Returns:
         nn.ModuleDict: The ModuleDict of multiple networks.
     """
-    if isinstance(module, MMDistributedDataParallel):
+    if is_model_wrapper(module):
         return module.module
 
     return module
@@ -33,7 +32,7 @@ def get_module(module):
 class UDADecorator(BaseSegmentor):
 
     def __init__(self, **cfg):
-        super(BaseSegmentor, self).__init__()
+        super().__init__(data_preprocessor=cfg.get('data_preprocessor'))
 
         self.model = build_segmentor(deepcopy(cfg['model']))
         self.train_cfg = cfg['model']['train_cfg']

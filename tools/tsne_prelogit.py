@@ -8,32 +8,36 @@ ground truth is used only for post-hoc coloring and validation metrics.
 
 import argparse
 import csv
-import json
 import os
 import os.path as osp
 import re
 import sys
-from collections import OrderedDict, defaultdict
+from collections import defaultdict
 
 ROOT = osp.abspath(osp.join(osp.dirname(__file__), '..'))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+# isort:skip_file
+
 import matplotlib
+
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import mmcv
+import mmengine
 import numpy as np
 import torch
 import torch.nn.functional as F
-from mmcv.parallel import MMDataParallel
-from mmcv.runner import load_state_dict, wrap_fp16_model
-from mmcv.runner.checkpoint import _load_checkpoint
+from mmengine.config import Config
 from scipy.spatial.distance import cdist
 
+from mmseg.apis.checkpoint import (load_student_checkpoint,
+                                   set_checkpoint_metadata)
 from mmseg.datasets import build_dataloader, build_dataset
+from mmseg.engine.config import evaluation_dataset_config, student_config
 from mmseg.models import build_segmentor
-from tools.test import _fix_img_scale_tuple, _iter_dataset_cfgs, update_legacy_cfg
+from mmseg.models.data_preprocessor import UDADataPreprocessor
+from tools.test import _fix_img_scale_tuple, _iter_dataset_cfgs
 
 
 def parse_args():
@@ -74,20 +78,14 @@ def parse_args():
         default=0,
         help='Limit target images/slices used for sampling. 0 means all.')
     parser.add_argument(
-        '--workers',
-        type=int,
-        default=0,
-        help='Data loader workers per GPU.')
+        '--workers', type=int, default=0, help='Data loader workers per GPU.')
     parser.add_argument(
         '--seed',
         type=int,
         default=0,
         help='Random seed for fixed pixel sampling and t-SNE.')
     parser.add_argument(
-        '--perplexity',
-        type=float,
-        default=30.0,
-        help='t-SNE perplexity.')
+        '--perplexity', type=float, default=30.0, help='t-SNE perplexity.')
     parser.add_argument(
         '--pca-dim',
         type=int,
@@ -129,45 +127,23 @@ def discover_checkpoints(dirs, stride):
 
 
 def build_target_dataset(cfg):
-    cfg = cfg.copy()
-    for dataset_cfg in _iter_dataset_cfgs(cfg.data.test):
-        _fix_img_scale_tuple(dataset_cfg)
-        dataset_cfg['test_mode'] = True
-    return build_dataset(cfg.data.test)
+    dataset_cfg = evaluation_dataset_config(cfg)
+    for leaf in _iter_dataset_cfgs(dataset_cfg):
+        _fix_img_scale_tuple(leaf)
+        leaf['test_mode'] = True
+    return build_dataset(dataset_cfg)
 
 
 def build_model(cfg, checkpoint_path, dataset, device='cuda'):
-    cfg = cfg.copy()
-    cfg.model.pretrained = None
-    cfg.model.train_cfg = None
-    model = build_segmentor(cfg.model, test_cfg=cfg.get('test_cfg'))
-    fp16_cfg = cfg.get('fp16', None)
-    if fp16_cfg is not None:
-        wrap_fp16_model(model)
-
-    checkpoint = _load_checkpoint(checkpoint_path, map_location='cpu')
-    state_dict = checkpoint.get('state_dict', checkpoint)
-    revised_state_dict = OrderedDict()
-    for key, value in state_dict.items():
-        key = re.sub(r'^module\.', '', key)
-        key = re.sub(r'^model\.', '', key)
-        if key.startswith('ema_'):
-            continue
-        revised_state_dict[key] = value
-    load_state_dict(model, revised_state_dict, strict=False, logger=None)
-    if 'CLASSES' in checkpoint.get('meta', {}):
-        model.CLASSES = checkpoint['meta']['CLASSES']
-    else:
-        model.CLASSES = dataset.CLASSES
-    if 'PALETTE' in checkpoint.get('meta', {}):
-        model.PALETTE = checkpoint['meta']['PALETTE']
-    else:
-        model.PALETTE = dataset.PALETTE
-
-    model.eval()
-    if device == 'cuda':
-        model = MMDataParallel(model.cuda(), device_ids=[0])
-    return model
+    model_cfg = student_config(cfg)
+    model_cfg['pretrained'] = None
+    model_cfg['train_cfg'] = None
+    if cfg.get('fp16') is not None:
+        raise ValueError('FP16 representation analysis is not qualified')
+    model = build_segmentor(model_cfg)
+    checkpoint = load_student_checkpoint(model, checkpoint_path)
+    set_checkpoint_metadata(model, checkpoint, dataset)
+    return model.to(device).eval()
 
 
 def register_prelogit_hook(model):
@@ -175,8 +151,10 @@ def register_prelogit_hook(model):
     holder = {}
 
     linear_pred = getattr(base.decode_head, 'linear_pred', None)
-    use_decode_head_fallback = base.decode_head.__class__.__name__ == 'DLV2Head'
+    use_decode_head_fallback = (
+        base.decode_head.__class__.__name__ == 'DLV2Head')
     if linear_pred is not None and not use_decode_head_fallback:
+
         def hook(_, inputs, __):
             holder['features'] = inputs[0].detach()
 
@@ -193,11 +171,10 @@ def register_prelogit_hook(model):
 
 
 def forward_model(model, data, device='cuda'):
+    actual_device = next(model.parameters()).device
+    data = UDADataPreprocessor().to(actual_device)(data)
     with torch.no_grad():
-        if device == 'cuda':
-            _ = model(return_loss=False, rescale=True, **data)
-        else:
-            raise RuntimeError('CPU inference path is not implemented.')
+        model(return_loss=False, rescale=True, **data)
 
 
 def captured_prelogit_features(holder, model):
@@ -335,7 +312,8 @@ def compute_metrics(features, labels):
     centroid_acc_per_class = {}
     for cls_id in unique:
         mask = labels == cls_id
-        centroid_acc_per_class[int(cls_id)] = float(np.mean(pred[mask] == cls_id))
+        centroid_acc_per_class[int(cls_id)] = float(
+            np.mean(pred[mask] == cls_id))
 
     silhouette = compute_silhouette(features, labels)
     return {
@@ -357,7 +335,8 @@ def run_tsne(features, seed, perplexity):
     except ImportError:
         return None
 
-    usable_perplexity = min(float(perplexity), max(2.0, (len(features) - 1) / 3.0))
+    usable_perplexity = min(
+        float(perplexity), max(2.0, (len(features) - 1) / 3.0))
     return TSNE(
         n_components=2,
         init='pca',
@@ -377,7 +356,8 @@ def plot_embedding(embedding, labels, class_names, title, out_file):
     }
     for cls_id in sorted(set(labels.tolist())):
         mask = labels == cls_id
-        name = class_names[cls_id] if cls_id < len(class_names) else str(cls_id)
+        name = class_names[cls_id] if cls_id < len(class_names) else str(
+            cls_id)
         ax.scatter(
             embedding[mask, 0],
             embedding[mask, 1],
@@ -401,7 +381,8 @@ def metrics_flat_row(checkpoint, metrics, class_names):
         'iter': checkpoint_iter(checkpoint),
         'silhouette': metrics['silhouette'],
         'intra_variance_mean': metrics['intra_variance_mean'],
-        'inter_centroid_distance_mean': metrics['inter_centroid_distance_mean'],
+        'inter_centroid_distance_mean':
+        metrics['inter_centroid_distance_mean'],
         'inter_centroid_distance_min': metrics['inter_centroid_distance_min'],
         'nearest_centroid_accuracy': metrics['nearest_centroid_accuracy'],
     }
@@ -410,7 +391,8 @@ def metrics_flat_row(checkpoint, metrics, class_names):
             'nearest_centroid_accuracy_per_class'
     ]:
         for cls_id, value in metrics[field].items():
-            cls_name = class_names[int(cls_id)] if int(cls_id) < len(class_names) else str(cls_id)
+            cls_name = class_names[int(cls_id)] if int(cls_id) < len(
+                class_names) else str(cls_id)
             row[f'{field}.{cls_name}'] = value
     return row
 
@@ -477,18 +459,19 @@ def extract_checkpoint_features(cfg, checkpoint, dataset, data_loader,
 def main():
     args = parse_args()
     if not torch.cuda.is_available():
-        raise RuntimeError('CUDA is required for this repository inference path.')
+        raise RuntimeError(
+            'CUDA is required for this repository inference path.')
 
-    cfg = mmcv.Config.fromfile(args.config)
-    cfg = update_legacy_cfg(cfg)
+    cfg = Config.fromfile(args.config)
     checkpoints = list(args.checkpoints)
     if not checkpoints:
-        checkpoints = discover_checkpoints(args.checkpoint_dir, args.checkpoint_stride)
+        checkpoints = discover_checkpoints(args.checkpoint_dir,
+                                           args.checkpoint_stride)
     checkpoints = sorted(checkpoints, key=lambda p: (checkpoint_iter(p), p))
     if not checkpoints:
         raise FileNotFoundError('No checkpoints found.')
 
-    mmcv.mkdir_or_exist(args.out_dir)
+    mmengine.mkdir_or_exist(args.out_dir)
     dataset = build_target_dataset(cfg)
     data_loader = build_dataloader(
         dataset,
@@ -498,7 +481,8 @@ def main():
         shuffle=False)
 
     class_names = tuple(getattr(dataset, 'CLASSES', tuple(map(str, range(5)))))
-    classes = list(range(0 if args.include_background else 1, len(class_names)))
+    classes = list(
+        range(0 if args.include_background else 1, len(class_names)))
 
     print(f'Config: {args.config}')
     print(f'Target samples: {len(dataset)}')
@@ -511,15 +495,12 @@ def main():
     print(f'Captured pre-logit feature map size: {feature_hw}')
 
     sample_plan, counts, image_indices = make_sample_plan(
-        dataset,
-        feature_hw,
-        classes,
-        args.samples_per_class,
-        args.max_images,
+        dataset, feature_hw, classes, args.samples_per_class, args.max_images,
         args.seed)
     print('Sample counts per class:')
     for cls_id in classes:
-        name = class_names[cls_id] if cls_id < len(class_names) else str(cls_id)
+        name = class_names[cls_id] if cls_id < len(class_names) else str(
+            cls_id)
         print(f'  {cls_id} {name}: {counts.get(cls_id, 0)}')
 
     manifest = {
@@ -527,12 +508,15 @@ def main():
         'checkpoints': [osp.abspath(p) for p in checkpoints],
         'feature_hw': feature_hw,
         'classes': list(class_names),
-        'sample_counts': {str(k): int(v) for k, v in counts.items()},
+        'sample_counts': {
+            str(k): int(v)
+            for k, v in counts.items()
+        },
         'image_indices': image_indices,
         'normalized': not args.no_normalize,
         'seed': args.seed,
     }
-    mmcv.dump(manifest, osp.join(args.out_dir, 'manifest.json'), indent=2)
+    mmengine.dump(manifest, osp.join(args.out_dir, 'manifest.json'), indent=2)
 
     metric_rows = []
     metric_records = []
@@ -546,26 +530,21 @@ def main():
         if np.isnan(features).any() or np.isinf(features).any():
             raise ValueError(f'NaN/Inf detected in features for {checkpoint}')
 
-        analysis_features = l2_normalize(features) if not args.no_normalize else features
+        analysis_features = l2_normalize(
+            features) if not args.no_normalize else features
         pca_features = pca_reduce(analysis_features, args.pca_dim)
         metrics = compute_metrics(pca_features, labels)
 
         pca_2d = pca_reduce(analysis_features, 2)
-        plot_embedding(
-            pca_2d,
-            labels,
-            class_names,
-            f'Target pre-logit PCA - {tag}',
-            osp.join(args.out_dir, f'{tag}_pca_by_class.png'))
+        plot_embedding(pca_2d, labels, class_names,
+                       f'Target pre-logit PCA - {tag}',
+                       osp.join(args.out_dir, f'{tag}_pca_by_class.png'))
 
         tsne = run_tsne(pca_features, args.seed, args.perplexity)
         if tsne is not None:
-            plot_embedding(
-                tsne,
-                labels,
-                class_names,
-                f'Target pre-logit t-SNE - {tag}',
-                osp.join(args.out_dir, f'{tag}_tsne_by_class.png'))
+            plot_embedding(tsne, labels, class_names,
+                           f'Target pre-logit t-SNE - {tag}',
+                           osp.join(args.out_dir, f'{tag}_tsne_by_class.png'))
             np.save(osp.join(args.out_dir, f'{tag}_tsne.npy'), tsne)
         else:
             print('scikit-learn is not installed; skipped t-SNE plot.')
@@ -592,7 +571,8 @@ def main():
             f"intra_mean={metrics['intra_variance_mean']:.4f}, "
             f"nearest_centroid_acc={metrics['nearest_centroid_accuracy']:.4f}")
 
-    mmcv.dump(metric_records, osp.join(args.out_dir, 'metrics.json'), indent=2)
+    mmengine.dump(
+        metric_records, osp.join(args.out_dir, 'metrics.json'), indent=2)
     write_metrics_csv(metric_rows, osp.join(args.out_dir, 'metrics.csv'))
     print(f'Wrote outputs to {args.out_dir}')
 

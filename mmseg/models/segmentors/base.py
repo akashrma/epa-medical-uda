@@ -1,26 +1,29 @@
 # Obtained from: https://github.com/open-mmlab/mmsegmentation/tree/v0.16.0
 # Modifications: Save label with train_id color map if opacity==1
 
+import mmcv
+import numpy as np
 import os
+import torch
+import torch.distributed as dist
 import warnings
 from abc import ABCMeta, abstractmethod
 from collections import OrderedDict
-
-import mmcv
-import numpy as np
-import torch
-import torch.distributed as dist
-from mmcv import mkdir_or_exist
-from mmcv.runner import BaseModule, auto_fp16
+from mmengine.model import BaseModel
+from mmengine.utils import mkdir_or_exist
 from PIL import Image
 
+from mmseg.models.data_preprocessor import UDADataPreprocessor
 
-class BaseSegmentor(BaseModule, metaclass=ABCMeta):
+
+class BaseSegmentor(BaseModel, metaclass=ABCMeta):
     """Base class for segmentors."""
 
-    def __init__(self, init_cfg=None):
-        super(BaseSegmentor, self).__init__(init_cfg)
-        self.fp16_enabled = False
+    def __init__(self, init_cfg=None, data_preprocessor=None):
+        if data_preprocessor is None:
+            data_preprocessor = UDADataPreprocessor()
+        super().__init__(
+            data_preprocessor=data_preprocessor, init_cfg=init_cfg)
 
     @property
     def with_neck(self):
@@ -98,8 +101,7 @@ class BaseSegmentor(BaseModule, metaclass=ABCMeta):
         else:
             return self.aug_test(imgs, img_metas, **kwargs)
 
-    @auto_fp16(apply_to=('img', ))
-    def forward(self, img, img_metas, return_loss=True, **kwargs):
+    def forward(self, img, img_metas, return_loss=True, mode=None, **kwargs):
         """Calls either :func:`forward_train` or :func:`forward_test` depending
         on whether ``return_loss`` is ``True``.
 
@@ -109,56 +111,34 @@ class BaseSegmentor(BaseModule, metaclass=ABCMeta):
         should be double nested (i.e.  List[Tensor], List[List[dict]]), with
         the outer list indicating test time augmentations.
         """
+        if mode is not None:
+            if mode not in ('loss', 'predict', 'tensor'):
+                raise ValueError(f'Unknown forward mode: {mode}')
+            if mode == 'tensor':
+                return self.encode_decode(img, img_metas)
+            return_loss = mode == 'loss'
         if return_loss:
             return self.forward_train(img, img_metas, **kwargs)
         else:
             return self.forward_test(img, img_metas, **kwargs)
 
-    def train_step(self, data_batch, optimizer, **kwargs):
-        """The iteration step during training.
-
-        This method defines an iteration step during training, except for the
-        back propagation and optimizer updating, which are done in an optimizer
-        hook. Note that in some complicated cases or models, the whole process
-        including back propagation and optimizer updating is also defined in
-        this method, such as GAN.
-
-        Args:
-            data (dict): The output of dataloader.
-            optimizer (:obj:`torch.optim.Optimizer` | dict): The optimizer of
-                runner is passed to ``train_step()``. This argument is unused
-                and reserved.
-
-        Returns:
-            dict: It should contain at least 3 keys: ``loss``, ``log_vars``,
-                ``num_samples``.
-                ``loss`` is a tensor for back propagation, which can be a
-                weighted sum of multiple losses.
-                ``log_vars`` contains all the variables to be sent to the
-                logger.
-                ``num_samples`` indicates the batch size (when the model is
-                DDP, it means the batch size on each GPU), which is used for
-                averaging the logs.
-        """
-        losses = self(**data_batch)
-        loss, log_vars = self._parse_losses(losses)
-
-        outputs = dict(
-            loss=loss,
-            log_vars=log_vars,
-            num_samples=len(data_batch['img_metas']))
-
-        return outputs
+    def train_step(self, data_batch, optim_wrapper):
+        """Preprocess a source batch and apply one native optimizer update."""
+        with optim_wrapper.optim_context(self):
+            data_batch = self.data_preprocessor(data_batch, training=True)
+            losses = self(**data_batch, mode='loss')
+            loss, log_vars = self._parse_losses(losses)
+        optim_wrapper.update_params(loss)
+        return log_vars
 
     def val_step(self, data_batch, **kwargs):
-        """The iteration step during validation.
-
-        This method shares the same signature as :func:`train_step`, but used
-        during val epochs. Note that the evaluation after training epochs is
-        not implemented with this method, but an evaluation hook.
-        """
-        output = self(**data_batch, **kwargs)
+        """Return ordered predictions for the native validation loop."""
+        data_batch = self.data_preprocessor(data_batch, training=False)
+        output = self(**data_batch, mode='predict', **kwargs)
         return output
+
+    def test_step(self, data_batch):
+        return self.val_step(data_batch)
 
     @staticmethod
     def _parse_losses(losses):

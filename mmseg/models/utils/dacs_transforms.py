@@ -159,13 +159,15 @@ def _fda_fft2(img):
 
 
 def _fda_ifft2(fft_img, spatial_shape):
-    if hasattr(torch, 'fft') and hasattr(torch.fft, 'ifft2'):
-        return torch.fft.ifft2(fft_img, dim=(-2, -1)).real
+    if hasattr(torch, 'fft') and hasattr(torch.fft, 'irfft2'):
+        # Legacy irfft(..., onesided=False) performs a complex-to-real
+        # transform using the nonnegative last-axis frequencies. The corner
+        # mutation is not Hermitian symmetric, so ifft2(...).real changes FDA.
+        width = spatial_shape[-1]
+        return torch.fft.irfft2(
+            fft_img[..., :width // 2 + 1], s=spatial_shape, dim=(-2, -1))
     return torch.irfft(
-        fft_img,
-        signal_ndim=2,
-        onesided=False,
-        signal_sizes=spatial_shape)
+        fft_img, signal_ndim=2, onesided=False, signal_sizes=spatial_shape)
 
 
 def _fda_extract_amp_phase(fft_img):

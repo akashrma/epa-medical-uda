@@ -1,12 +1,10 @@
 # Obtained from: https://github.com/open-mmlab/mmsegmentation/tree/v0.16.0
 # Modifications: Support valid_pseudo_mask
 
-from collections.abc import Sequence
-
-import mmcv
+import mmengine
 import numpy as np
 import torch
-from mmcv.parallel import DataContainer as DC
+from collections.abc import Sequence
 
 from ..builder import PIPELINES
 
@@ -26,7 +24,7 @@ def to_tensor(data):
         return data
     elif isinstance(data, np.ndarray):
         return torch.from_numpy(data)
-    elif isinstance(data, Sequence) and not mmcv.is_str(data):
+    elif isinstance(data, Sequence) and not mmengine.is_str(data):
         return torch.tensor(data)
     elif isinstance(data, int):
         return torch.LongTensor([data])
@@ -138,55 +136,16 @@ class Transpose(object):
                f'(keys={self.keys}, order={self.order})'
 
 
-@PIPELINES.register_module()
-class ToDataContainer(object):
-    """Convert results to :obj:`mmcv.DataContainer` by given fields.
-
-    Args:
-        fields (Sequence[dict]): Each field is a dict like
-            ``dict(key='xxx', **kwargs)``. The ``key`` in result will
-            be converted to :obj:`mmcv.DataContainer` with ``**kwargs``.
-            Default: ``(dict(key='img', stack=True),
-            dict(key='gt_semantic_seg'))``.
-    """
-
-    def __init__(self,
-                 fields=(dict(key='img',
-                              stack=True), dict(key='gt_semantic_seg'))):
-        self.fields = fields
-
-    def __call__(self, results):
-        """Call function to convert data in results to
-        :obj:`mmcv.DataContainer`.
-
-        Args:
-            results (dict): Result dict contains the data to convert.
-
-        Returns:
-            dict: The result dict contains the data converted to
-                :obj:`mmcv.DataContainer`.
-        """
-
-        for field in self.fields:
-            field = field.copy()
-            key = field.pop('key')
-            results[key] = DC(results[key], **field)
-        return results
-
-    def __repr__(self):
-        return self.__class__.__name__ + f'(fields={self.fields})'
-
-
-@PIPELINES.register_module()
+@PIPELINES.register_module(name=['DefaultFormatBundle', 'PackUDAInputs'])
 class DefaultFormatBundle(object):
     """Default formatting bundle.
 
     It simplifies the pipeline of formatting common fields, including "img"
     and "gt_semantic_seg". These fields are formatted as follows.
 
-    - img: (1)transpose, (2)to tensor, (3)to DataContainer (stack=True)
+    - img: (1)transpose, (2)to tensor, (3)collate as a batch tensor
     - gt_semantic_seg: (1)unsqueeze dim-0 (2)to tensor,
-                       (3)to DataContainer (stack=True)
+                       (3)collate as a batch tensor
     """
 
     def __call__(self, results):
@@ -205,16 +164,14 @@ class DefaultFormatBundle(object):
             if len(img.shape) < 3:
                 img = np.expand_dims(img, -1)
             img = np.ascontiguousarray(img.transpose(2, 0, 1))
-            results['img'] = DC(to_tensor(img), stack=True)
+            results['img'] = to_tensor(img)
         if 'gt_semantic_seg' in results:
             # convert to long
-            results['gt_semantic_seg'] = DC(
-                to_tensor(results['gt_semantic_seg'][None,
-                                                     ...].astype(np.int64)),
-                stack=True)
+            results['gt_semantic_seg'] = to_tensor(
+                results['gt_semantic_seg'][None, ...].astype(np.int64))
         if 'valid_pseudo_mask' in results:
-            results['valid_pseudo_mask'] = DC(
-                to_tensor(results['valid_pseudo_mask'][None, ...]), stack=True)
+            results['valid_pseudo_mask'] = to_tensor(
+                results['valid_pseudo_mask'][None, ...])
         return results
 
     def __repr__(self):
@@ -253,7 +210,7 @@ class Collect(object):
     Args:
         keys (Sequence[str]): Keys of results to be collected in ``data``.
         meta_keys (Sequence[str], optional): Meta keys to be converted to
-            ``mmcv.DataContainer`` and collected in ``data[img_metas]``.
+            plain dictionaries and collected in ``data[img_metas]``.
             Default: ``('filename', 'ori_filename', 'ori_shape', 'img_shape',
             'pad_shape', 'scale_factor', 'flip', 'flip_direction',
             'img_norm_cfg')``
@@ -269,7 +226,7 @@ class Collect(object):
 
     def __call__(self, results):
         """Call function to collect keys in results. The keys in ``meta_keys``
-        will be converted to :obj:mmcv.DataContainer.
+        remain a CPU metadata dictionary.
 
         Args:
             results (dict): Result dict contains the data to collect.
@@ -284,7 +241,7 @@ class Collect(object):
         img_meta = {}
         for key in self.meta_keys:
             img_meta[key] = results[key]
-        data['img_metas'] = DC(img_meta, cpu_only=True)
+        data['img_metas'] = img_meta
         for key in self.keys:
             data[key] = results[key]
         return data

@@ -8,136 +8,97 @@
 # ---------------------------------------------------------------
 
 import argparse
-import logging
 import os
-import os.path as osp
-import subprocess
 import uuid
 from datetime import datetime
+from pathlib import Path
 
-import torch
+from mmengine.config import Config, DictAction
+from mmengine.utils import get_git_hash
+
 from experiments import generate_experiment_cfgs
-from mmcv import Config, get_git_hash
 from tools import train
 
 
-def run_command(command):
-    p = subprocess.Popen(
-        command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=True)
-    for line in iter(p.stdout.readline, b''):
-        print(line.decode('utf-8'), end='')
-
-
-def rsync(src, dst):
-    rsync_cmd = f'rsync -a {src} {dst}'
-    print(rsync_cmd)
-    run_command(rsync_cmd)
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description='Generate and launch experiments')
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument('--exp', type=int)
+    group.add_argument('--config')
+    parser.add_argument('--machine', choices=['local'], default='local')
+    parser.add_argument('--debug', action='store_true')
+    parser.add_argument(
+        '--startup-test',
+        action='store_true',
+        help='Stop after two updates; retain schedule horizon')
+    parser.add_argument('--stop-after', type=int)
+    parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--work-dir')
+    parser.add_argument('--resume-from')
+    parser.add_argument('--no-validate', action='store_true')
+    parser.add_argument('--seed', type=int)
+    parser.add_argument(
+        '--options', '--cfg-options', nargs='+', action=DictAction)
+    args = parser.parse_args(argv)
+    configs = Path(__file__).resolve().parent / 'configs'
+    if args.config:
+        original = Config.fromfile(args.config)
+        specs = [
+            dict(
+                _base_=str(Path(args.config).resolve()),
+                name=original.get('name',
+                                  Path(args.config).stem),
+                exp=original.get('exp', 'medical'))
+        ]
+    else:
+        specs = generate_experiment_cfgs(args.exp)
+    if len(specs) != 1 and (args.work_dir or args.resume_from):
+        raise ValueError('Explicit work-dir/resume requires one experiment')
+    generated = []
+    for spec in specs:
+        spec = dict(spec)
+        if not args.config:
+            spec['_base_'] = [str(configs / base) for base in spec['_base_']]
+        if args.debug:
+            spec.setdefault('log_config', {}).update(
+                interval=10, img_interval=10)
+            spec.setdefault('evaluation', {})['interval'] = 200
+            spec.setdefault('uda', {})['debug_img_interval'] = 10
+        name = (f'{datetime.now():%y%m%d_%H%M%S}_'
+                f'{spec["name"]}_{uuid.uuid4().hex[:5]}')
+        experiment = f'{args.machine}-{spec.get("exp", args.exp)}'
+        spec.update(
+            name=name,
+            git_rev=get_git_hash(),
+            work_dir=args.work_dir
+            or os.path.join('work_dirs', experiment, name))
+        filename = configs / 'generated' / experiment / (name + '.py')
+        filename.parent.mkdir(parents=True, exist_ok=True)
+        Config(spec).dump(str(filename))
+        launch = [str(filename)]
+        cap = args.stop_after if args.stop_after is not None else \
+            (2 if args.startup_test else None)
+        if cap is not None:
+            launch.extend(['--stop-after', str(cap)])
+        for flag, value in (('--resume-from', args.resume_from), ('--seed',
+                                                                  args.seed)):
+            if value is not None:
+                launch.extend([flag, str(value)])
+        if args.no_validate or args.startup_test:
+            launch.append('--no-validate')
+        if args.dry_run:
+            launch.append('--dry-run')
+        # Merge structured overrides into the generated child before launch.
+        if args.options:
+            child = Config.fromfile(str(filename))
+            child.merge_from_dict(args.options)
+            child.dump(str(filename))
+        print(f'Run job {name}')
+        train.main(launch)
+        generated.append(str(filename))
+    return generated
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument(
-        '--exp',
-        type=int,
-        default=None,
-        help='Experiment id as defined in experiment.py',
-    )
-    group.add_argument(
-        '--config',
-        default=None,
-        help='Path to config file',
-    )
-    parser.add_argument(
-        '--machine', type=str, choices=['local'], default='local')
-    parser.add_argument('--debug', action='store_true')
-    parser.add_argument('--startup-test', action='store_true')
-    args = parser.parse_args()
-    assert (args.config is None) != (args.exp is None), \
-        'Either config or exp has to be defined.'
-
-    base_dir = osp.dirname(__file__)
-    configs_dir = osp.join(base_dir, 'configs')
-    GEN_CONFIG_DIR = osp.join(configs_dir, 'generated')
-    JOB_DIR = osp.join(base_dir, 'jobs')
-    cfgs, config_files = [], []
-
-    # Training with Predefined Config
-    if args.config is not None:
-        cfg_path = args.config
-        cfg = Config.fromfile(cfg_path)
-        # Specify Name and Work Directory
-        exp_name = f'{args.machine}-{cfg["exp"]}'
-        unique_name = f'{datetime.now().strftime("%y%m%d_%H%M")}_' \
-                      f'{cfg["name"]}_{str(uuid.uuid4())[:5]}'
-        cfg_abs = osp.abspath(cfg_path)
-        base_rel = osp.relpath(cfg_abs, configs_dir)
-        base_path = osp.join('..', '..', base_rel)
-        child_cfg = {
-            '_base_': base_path,
-            'name': unique_name,
-            'work_dir': os.path.join('work_dirs', exp_name, unique_name),
-            'git_rev': get_git_hash()
-        }
-        cfg_out_file = osp.join(GEN_CONFIG_DIR, exp_name,
-                                f"{child_cfg['name']}.py")
-        os.makedirs(osp.dirname(cfg_out_file), exist_ok=True)
-        assert not os.path.isfile(cfg_out_file)
-        with open(cfg_out_file, 'w') as f:
-            f.write(Config(child_cfg).pretty_text)
-        # Json files do not distinguish tuples and lists, which is
-        # necessary for Resize.img_scale.
-        # with open(cfg_out_file, 'w') as of:
-        #     json.dump(child_cfg, of, indent=4)
-        config_files.append(cfg_out_file)
-        cfgs.append(cfg)
-
-    # Training with Generated Configs from experiments.py
-    if args.exp is not None:
-        exp_name = f'{args.machine}-exp{args.exp}'
-        if args.startup_test:
-            exp_name += '-startup'
-        cfgs = generate_experiment_cfgs(args.exp)
-        # Generate Configs
-        for i, cfg in enumerate(cfgs):
-            if args.debug:
-                cfg.setdefault('log_config', {})['interval'] = 10
-                cfg.setdefault('log_config', {})['img_interval'] = 10
-                cfg['evaluation'] = dict(interval=200, metric='mIoU')
-                if 'dacs' in cfg['name'] or 'minent' in cfg['name'] or \
-                        'advseg' in cfg['name']:
-                    cfg.setdefault('uda', {})['debug_img_interval'] = 10
-                    # cfg.setdefault('uda', {})['print_grad_magnitude'] = True
-            if args.startup_test:
-                cfg['log_level'] = logging.ERROR
-                cfg['runner'] = dict(type='IterBasedRunner', max_iters=2)
-                cfg['evaluation']['interval'] = 100
-                cfg['checkpoint_config'] = dict(
-                    by_epoch=False, interval=100, save_last=False)
-            # Generate Config File
-            cfg['name'] = f'{datetime.now().strftime("%y%m%d_%H%M")}_' \
-                          f'{cfg["name"]}_{str(uuid.uuid4())[:5]}'
-            cfg['work_dir'] = os.path.join('work_dirs', exp_name, cfg['name'])
-            cfg['git_rev'] = get_git_hash()
-            cfg['_base_'] = ['../../' + e for e in cfg['_base_']]
-            cfg_out_file = osp.join(GEN_CONFIG_DIR, exp_name,
-                                    f"{cfg['name']}.py")
-            os.makedirs(osp.dirname(cfg_out_file), exist_ok=True)
-            assert not os.path.isfile(cfg_out_file)
-            with open(cfg_out_file, 'w') as f:
-                f.write(Config(cfg).pretty_text)
-            # Json files do not distinguish tuples and lists, which is
-            # necessary for Resize.img_scale.
-            # with open(cfg_out_file, 'w') as of:
-            #     json.dump(cfg, of, indent=4)
-            config_files.append(cfg_out_file)
-
-    if args.machine == 'local':
-        for i, cfg in enumerate(cfgs):
-            if args.startup_test and cfg['seed'] != 0:
-                continue
-            print('Run job {}'.format(cfg['name']))
-            train.main([config_files[i]])
-            torch.cuda.empty_cache()
-    else:
-        raise NotImplementedError(args.machine)
+    main()

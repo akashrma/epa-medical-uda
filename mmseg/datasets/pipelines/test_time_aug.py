@@ -1,8 +1,7 @@
 # Obtained from: https://github.com/open-mmlab/mmsegmentation/tree/v0.16.0
 
+import mmengine
 import warnings
-
-import mmcv
 
 from ..builder import PIPELINES
 from .compose import Compose
@@ -62,12 +61,12 @@ class MultiScaleFlipAug(object):
         if img_ratios is not None:
             img_ratios = img_ratios if isinstance(img_ratios,
                                                   list) else [img_ratios]
-            assert mmcv.is_list_of(img_ratios, float)
+            assert mmengine.is_list_of(img_ratios, float)
         if img_scale is None:
             # mode 1: given img_scale=None and a range of image ratio
             self.img_scale = None
-            assert mmcv.is_list_of(img_ratios, float)
-        elif isinstance(img_scale, tuple) and mmcv.is_list_of(
+            assert mmengine.is_list_of(img_ratios, float)
+        elif isinstance(img_scale, tuple) and mmengine.is_list_of(
                 img_ratios, float):
             assert len(img_scale) == 2
             # mode 2: given a scale and a range of image ratio
@@ -78,12 +77,13 @@ class MultiScaleFlipAug(object):
             # mode 3: given multiple scales
             self.img_scale = img_scale if isinstance(img_scale,
                                                      list) else [img_scale]
-        assert mmcv.is_list_of(self.img_scale, tuple) or self.img_scale is None
+        assert mmengine.is_list_of(self.img_scale,
+                                   tuple) or self.img_scale is None
         self.flip = flip
         self.img_ratios = img_ratios
         self.flip_direction = flip_direction if isinstance(
             flip_direction, list) else [flip_direction]
-        assert mmcv.is_list_of(self.flip_direction, str)
+        assert mmengine.is_list_of(self.flip_direction, str)
         if not self.flip and self.flip_direction != ['horizontal']:
             warnings.warn(
                 'flip_direction has no effect when flip is set to False')
@@ -104,7 +104,8 @@ class MultiScaleFlipAug(object):
         """
 
         aug_data = []
-        if self.img_scale is None and mmcv.is_list_of(self.img_ratios, float):
+        if self.img_scale is None and mmengine.is_list_of(
+                self.img_ratios, float):
             h, w = results['img'].shape[:2]
             img_scale = [(int(w * ratio), int(h * ratio))
                          for ratio in self.img_ratios]

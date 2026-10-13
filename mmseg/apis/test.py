@@ -1,17 +1,25 @@
 # Obtained from: https://github.com/open-mmlab/mmsegmentation/tree/v0.16.0
 # Modifications: Support debug_output_attention
 
+import mmcv
+import numpy as np
 import os.path as osp
 import re
 import tempfile
-
-import mmcv
-import numpy as np
 import torch
-from mmcv.engine import collect_results_cpu, collect_results_gpu
 from mmcv.image import tensor2imgs
-from mmcv.runner import get_dist_info
+from mmengine.dist import (collect_results_cpu, collect_results_gpu,
+                           get_dist_info)
+from mmengine.utils import ProgressBar, mkdir_or_exist
 from PIL import Image
+
+from mmseg.models.data_preprocessor import UDADataPreprocessor
+
+
+def _prepare_batch(model, data):
+    module = model.module if hasattr(model, 'module') else model
+    device = next(module.parameters()).device
+    return UDADataPreprocessor().to(device)(data)
 
 
 def np2tmp(array, temp_file_name=None, tmpdir=None):
@@ -82,7 +90,7 @@ def _save_gt_label_if_available(dataset, img_meta, gt_out_file, gt_cache):
         return
 
     gt_slice = np.array(gt_slice).astype(np.uint8)
-    mmcv.mkdir_or_exist(osp.dirname(gt_out_file))
+    mkdir_or_exist(osp.dirname(gt_out_file))
     if getattr(dataset, 'PALETTE', None) is not None:
         palette = np.array(dataset.PALETTE, dtype=np.uint8)
         out = Image.fromarray(gt_slice).convert('P')
@@ -122,16 +130,17 @@ def single_gpu_test(model,
     results = []
     dataset = data_loader.dataset
     gt_cache = {}
-    prog_bar = mmcv.ProgressBar(len(dataset))
+    prog_bar = ProgressBar(len(dataset))
     if efficient_test:
-        mmcv.mkdir_or_exist('.efficient_test')
+        mkdir_or_exist('.efficient_test')
     for i, data in enumerate(data_loader):
+        data = _prepare_batch(model, data)
         with torch.no_grad():
             result = model(return_loss=False, **data)
 
         if show or out_dir or gt_out_dir:
             img_tensor = data['img'][0]
-            img_metas = data['img_metas'][0].data[0]
+            img_metas = data['img_metas'][0]
             imgs = tensor2imgs(img_tensor, **img_metas[0]['img_norm_cfg'])
             assert len(imgs) == len(img_metas)
 
@@ -151,17 +160,19 @@ def single_gpu_test(model,
                     gt_out_file = osp.join(
                         gt_out_dir,
                         _safe_output_name(img_meta['ori_filename']))
-                    _save_gt_label_if_available(
-                        dataset, img_meta, gt_out_file, gt_cache)
+                    _save_gt_label_if_available(dataset, img_meta, gt_out_file,
+                                                gt_cache)
 
                 if show or out_dir:
-                    if hasattr(model.module.decode_head,
+                    module = model.module if hasattr(model,
+                                                     'module') else model
+                    if hasattr(module.decode_head,
                                'debug_output_attention') and \
-                            model.module.decode_head.debug_output_attention:
+                            module.decode_head.debug_output_attention:
                         # Attention debug output
                         mmcv.imwrite(result[0] * 255, out_file)
                     else:
-                        model.module.show_result(
+                        module.show_result(
                             img_show,
                             result,
                             palette=dataset.PALETTE,
@@ -216,10 +227,11 @@ def multi_gpu_test(model,
     dataset = data_loader.dataset
     rank, world_size = get_dist_info()
     if rank == 0:
-        prog_bar = mmcv.ProgressBar(len(dataset))
+        prog_bar = ProgressBar(len(dataset))
     if efficient_test:
-        mmcv.mkdir_or_exist('.efficient_test')
+        mkdir_or_exist('.efficient_test')
     for i, data in enumerate(data_loader):
+        data = _prepare_batch(model, data)
         with torch.no_grad():
             result = model(return_loss=False, rescale=True, **data)
 

@@ -12,15 +12,19 @@ ROOT = osp.abspath(osp.join(osp.dirname(__file__), '..'))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-import mmcv
+# isort:skip_file
+
+import mmengine
 import torch
-from mmcv.parallel import MMDataParallel, MMDistributedDataParallel
-from mmcv.runner import (get_dist_info, init_dist, load_checkpoint,
-                         wrap_fp16_model)
-from mmcv.utils import DictAction
+from mmengine.config import Config, DictAction
+from mmengine.dist import get_dist_info, init_dist
+from mmengine.model import MMDistributedDataParallel
 
 from mmseg.apis import multi_gpu_test, single_gpu_test
+from mmseg.apis.checkpoint import (load_student_checkpoint,
+                                   set_checkpoint_metadata)
 from mmseg.datasets import build_dataloader, build_dataset
+from mmseg.engine.config import evaluation_dataset_config, student_config
 from mmseg.models import build_segmentor
 
 
@@ -77,7 +81,7 @@ def _set_test_mode(cfg_node, test_mode=True):
 def _replace_val_with_test(cfg_node):
     for dataset_cfg in _iter_dataset_cfgs(cfg_node):
         for k, v in list(dataset_cfg.items()):
-            if isinstance(v, str):
+            if k in ('img_list', 'ann_list', 'split') and isinstance(v, str):
                 dataset_cfg[k] = v.replace('val', 'test')
 
 
@@ -99,7 +103,7 @@ def update_legacy_cfg(cfg):
     return cfg
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description='mmseg test (and eval) a model')
     parser.add_argument('config', help='test config file path')
@@ -152,7 +156,11 @@ def parse_args():
         help='tmp directory used for collecting results from multiple '
         'workers, available when gpu_collect is not specified')
     parser.add_argument(
-        '--options', nargs='+', action=DictAction, help='custom options')
+        '--options',
+        '--cfg-options',
+        nargs='+',
+        action=DictAction,
+        help='custom options')
     parser.add_argument(
         '--eval-options',
         nargs='+',
@@ -169,14 +177,17 @@ def parse_args():
         default=0.5,
         help='Opacity of painted segmentation map. In (0, 1] range.')
     parser.add_argument('--local_rank', type=int, default=0)
-    args = parser.parse_args()
+    parser.add_argument('--device', default='cuda:0')
+    parser.add_argument(
+        '--metrics-out', help='Write unrounded medical metrics JSON')
+    args = parser.parse_args(argv)
     if 'LOCAL_RANK' not in os.environ:
         os.environ['LOCAL_RANK'] = str(args.local_rank)
     return args
 
 
-def main():
-    args = parse_args()
+def main(argv=None):
+    args = parse_args(argv)
 
     assert args.out or args.eval or args.format_only or args.show \
         or args.show_dir or args.gt_dir, \
@@ -190,10 +201,33 @@ def main():
     if args.out is not None and not args.out.endswith(('.pkl', '.pickle')):
         raise ValueError('The output file must be a pkl file.')
 
-    cfg = mmcv.Config.fromfile(args.config)
+    cfg = Config.fromfile(args.config)
     if args.options is not None:
         cfg.merge_from_dict(args.options)
+    # Work on a student/dataset view without mutating the input schema.
+    native = 'train_dataloader' in cfg
+    workers = cfg.test_dataloader.num_workers if native else \
+        cfg.data.workers_per_gpu
+    model_cfg = student_config(cfg)
+    test_dataset_cfg = evaluation_dataset_config(cfg)
+    crop_size = cfg.train_dataloader.dataset.get('sync_crop_size') if native \
+        else cfg.data.train.get('sync_crop_size', cfg.get('crop_size'))
+    if crop_size is None:
+        crop_size = cfg.get('crop_size', (256, 256))
+    cfg = Config(
+        dict(
+            model=model_cfg,
+            data=dict(
+                test=test_dataset_cfg,
+                train=dict(sync_crop_size=crop_size),
+                workers_per_gpu=workers),
+            crop_size=crop_size,
+            dist_params=cfg.get('dist_params', {}),
+            cudnn_benchmark=cfg.get('cudnn_benchmark', True),
+            fp16=cfg.get('fp16')))
     cfg = update_legacy_cfg(cfg)
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = False
     # set cudnn_benchmark
     if cfg.get('cudnn_benchmark', False):
         torch.backends.cudnn.benchmark = True
@@ -257,24 +291,12 @@ def main():
     # build the model and load checkpoint
     cfg.model.train_cfg = None
     model = build_segmentor(cfg.model, test_cfg=cfg.get('test_cfg'))
-    fp16_cfg = cfg.get('fp16', None)
-    if fp16_cfg is not None:
-        wrap_fp16_model(model)
-    checkpoint = load_checkpoint(
-        model,
-        args.checkpoint,
-        map_location='cpu',
-        revise_keys=[(r'^module\.', ''), ('model.', '')])
-    if 'CLASSES' in checkpoint.get('meta', {}):
-        model.CLASSES = checkpoint['meta']['CLASSES']
-    else:
-        print('"CLASSES" not found in meta, use dataset.CLASSES instead')
-        model.CLASSES = dataset.CLASSES
-    if 'PALETTE' in checkpoint.get('meta', {}):
-        model.PALETTE = checkpoint['meta']['PALETTE']
-    else:
-        print('"PALETTE" not found in meta, use dataset.PALETTE instead')
-        model.PALETTE = dataset.PALETTE
+    if cfg.get('fp16') is not None:
+        raise ValueError(
+            'FP16 inference is not qualified for matched accuracy')
+    checkpoint = load_student_checkpoint(model, args.checkpoint)
+    set_checkpoint_metadata(model, checkpoint, dataset)
+    model.to(args.device).eval()
 
     # Keep visualization palette/classes consistent with resolved model meta.
     _sync_dataset_meta(dataset, model.CLASSES, model.PALETTE)
@@ -284,7 +306,6 @@ def main():
         efficient_test = args.eval_options.get('efficient_test', False)
 
     if not distributed:
-        model = MMDataParallel(model, device_ids=[0])
         outputs = single_gpu_test(model, data_loader, args.show, args.show_dir,
                                   args.gt_dir, efficient_test, args.opacity)
     else:
@@ -299,14 +320,18 @@ def main():
     if rank == 0:
         if args.out:
             print(f'\nwriting results to {args.out}')
-            mmcv.dump(outputs, args.out)
+            mmengine.dump(outputs, args.out)
         kwargs = {} if args.eval_options is None else args.eval_options
         if args.format_only:
             dataset.format_results(outputs, **kwargs)
         if args.eval:
             res = dataset.evaluate(outputs, args.eval, **kwargs)
-            print([k for k, v in res.items() if 'IoU' in k])
-            print([round(v * 100, 1) for k, v in res.items() if 'IoU' in k])
+            print(res)
+            if args.metrics_out:
+                os.makedirs(
+                    osp.dirname(osp.abspath(args.metrics_out)), exist_ok=True)
+                mmengine.dump(res, args.metrics_out)
+            return res
 
 
 if __name__ == '__main__':

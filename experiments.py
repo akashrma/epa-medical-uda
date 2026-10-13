@@ -5,8 +5,7 @@
 
 import itertools
 import os
-
-from mmcv import Config
+from mmengine.config import Config
 
 # flake8: noqa
 

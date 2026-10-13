@@ -5,11 +5,10 @@
 # - Add return_logits flag
 # - Update debug_output from loss
 
-from abc import ABCMeta, abstractmethod
-
 import torch
 import torch.nn as nn
-from mmcv.runner import BaseModule, auto_fp16, force_fp32
+from abc import ABCMeta, abstractmethod
+from mmengine.model import BaseModule
 
 from mmseg.core import build_pixel_sampler
 from mmseg.ops import resize
@@ -93,7 +92,6 @@ class BaseDecodeHead(BaseModule, metaclass=ABCMeta):
             self.dropout = nn.Dropout2d(dropout_ratio)
         else:
             self.dropout = None
-        self.fp16_enabled = False
 
         self.debug = False
         self.debug_output = dict()
@@ -170,7 +168,6 @@ class BaseDecodeHead(BaseModule, metaclass=ABCMeta):
 
         return inputs
 
-    @auto_fp16()
     @abstractmethod
     def forward(self, inputs):
         """Placeholder of forward function."""
@@ -229,7 +226,6 @@ class BaseDecodeHead(BaseModule, metaclass=ABCMeta):
         output = self.conv_seg(feat)
         return output
 
-    @force_fp32(apply_to=('seg_logit', ))
     def losses(self, seg_logit, seg_label, seg_weight=None):
         """Compute segmentation loss."""
         loss = dict()

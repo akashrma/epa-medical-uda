@@ -2,14 +2,15 @@
 # Modifications:
 # - Additional dataset location logging
 
+import mmcv
+import mmengine
+import numpy as np
 import os
 import os.path as osp
 from collections import OrderedDict
+from copy import deepcopy
 from functools import reduce
-
-import mmcv
-import numpy as np
-from mmcv.utils import print_log
+from mmengine.logging import print_log
 from prettytable import PrettyTable
 from torch.utils.data import Dataset
 
@@ -89,6 +90,7 @@ class CustomDataset(Dataset):
                  reduce_zero_label=False,
                  classes=None,
                  palette=None):
+        self.pipeline_cfg = deepcopy(pipeline)
         self.pipeline = Compose(pipeline)
         self.img_dir = img_dir
         self.img_suffix = img_suffix
@@ -149,7 +151,7 @@ class CustomDataset(Dataset):
                         img_info['ann'] = dict(seg_map=seg_map)
                     img_infos.append(img_info)
         else:
-            for img in mmcv.scandir(img_dir, img_suffix, recursive=True):
+            for img in mmengine.scandir(img_dir, img_suffix, recursive=True):
                 img_info = dict(filename=img)
                 if ann_dir is not None:
                     seg_map = img.replace(img_suffix, seg_map_suffix)
@@ -172,6 +174,10 @@ class CustomDataset(Dataset):
         """
 
         return self.img_infos[idx]['ann']
+
+    @property
+    def metainfo(self):
+        return dict(classes=self.CLASSES, palette=self.PALETTE)
 
     def pre_pipeline(self, results):
         """Prepare results dict for pipeline."""
@@ -266,7 +272,7 @@ class CustomDataset(Dataset):
         self.custom_classes = True
         if isinstance(classes, str):
             # take it as a file path
-            class_names = mmcv.list_from_file(classes)
+            class_names = mmengine.list_from_file(classes)
         elif isinstance(classes, (tuple, list)):
             class_names = classes
         else:
@@ -356,14 +362,16 @@ class CustomDataset(Dataset):
 
         # summary table
         ret_metrics_summary = OrderedDict({
-            ret_metric: np.round(np.nanmean(ret_metric_value) * 100, 2)
+            ret_metric:
+            np.round(np.nanmean(ret_metric_value) * 100, 2)
             for ret_metric, ret_metric_value in ret_metrics.items()
         })
 
         # each class table
         ret_metrics.pop('aAcc', None)
         ret_metrics_class = OrderedDict({
-            ret_metric: np.round(ret_metric_value * 100, 2)
+            ret_metric:
+            np.round(ret_metric_value * 100, 2)
             for ret_metric, ret_metric_value in ret_metrics.items()
         })
         ret_metrics_class.update({'Class': class_names})
@@ -400,7 +408,7 @@ class CustomDataset(Dataset):
                 for idx, name in enumerate(class_names)
             })
 
-        if mmcv.is_list_of(results, str):
+        if mmengine.is_list_of(results, str):
             for file_name in results:
                 os.remove(file_name)
         return eval_results

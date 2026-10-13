@@ -1,7 +1,5 @@
 # Obtained from: https://github.com/open-mmlab/mmsegmentation/tree/v0.16.0
 
-import mmcv
-
 
 def cityscapes_classes():
     """Cityscapes class names for external use."""
@@ -127,7 +125,7 @@ def get_classes(dataset):
         for alias in aliases:
             alias2name[alias] = name
 
-    if mmcv.is_str(dataset):
+    if isinstance(dataset, str):
         if dataset in alias2name:
             labels = eval(alias2name[dataset] + '_classes()')
         else:
@@ -144,7 +142,7 @@ def get_palette(dataset):
         for alias in aliases:
             alias2name[alias] = name
 
-    if mmcv.is_str(dataset):
+    if isinstance(dataset, str):
         if dataset in alias2name:
             labels = eval(alias2name[dataset] + '_palette()')
         else:

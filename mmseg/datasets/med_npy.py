@@ -1,23 +1,20 @@
 # Custom dataset for MR/CT .npy segmentation lists.
 
+import mmcv
+import mmengine
+import numpy as np
 import os
 import os.path as osp
-
-import mmcv
-import numpy as np
-from mmcv.utils import print_log
+from collections import OrderedDict
+from mmengine.logging import print_log
 from prettytable import PrettyTable
 
-from mmseg.utils import get_root_logger
 from mmseg.core import eval_metrics
+from mmseg.core.evaluation.medical_metrics import legacy_assd as medpy_assd
+from mmseg.core.evaluation.medical_metrics import require_medpy
+from mmseg.utils import get_root_logger
 from .builder import DATASETS
 from .custom import CustomDataset
-from collections import OrderedDict
-
-try:
-    from medpy.metric.binary import assd as medpy_assd
-except ImportError:  # pragma: no cover - optional dependency
-    medpy_assd = None
 
 
 @DATASETS.register_module()
@@ -33,11 +30,7 @@ class MedNpyListDataset(CustomDataset):
         [205, 133, 63],
     ]
 
-    def __init__(self,
-                 img_list,
-                 ann_list=None,
-                 data_root=None,
-                 **kwargs):
+    def __init__(self, img_list, ann_list=None, data_root=None, **kwargs):
         self._data_root = data_root
         self.img_list = self._resolve_path(img_list)
         self.ann_list = self._resolve_path(ann_list) if ann_list else None
@@ -62,7 +55,8 @@ class MedNpyListDataset(CustomDataset):
         file_dir = osp.dirname(__file__)  # .../MIC/seg/mmseg/datasets
         seg_root = osp.abspath(osp.join(file_dir, '..', '..'))  # .../MIC/seg
         mic_root = osp.abspath(osp.join(file_dir, '..', '..', '..'))  # .../MIC
-        repo_root = osp.abspath(osp.join(file_dir, '..', '..', '..', '..'))  # .../medUDA
+        repo_root = osp.abspath(osp.join(file_dir, '..', '..', '..',
+                                         '..'))  # .../medUDA
         launch_root = os.getcwd()
         candidates.extend([
             osp.join(launch_root, path),
@@ -90,14 +84,16 @@ class MedNpyListDataset(CustomDataset):
     def _read_list(self, list_path):
         base_dir = osp.dirname(list_path)
         paths = []
-        for p in mmcv.list_from_file(list_path):
+        for p in mmengine.list_from_file(list_path):
             if not p:
                 continue
             if osp.isabs(p):
                 paths.append(p)
             else:
                 candidate = osp.abspath(osp.join(base_dir, p))
-                paths.append(candidate if osp.exists(candidate) else self._resolve_path(p))
+                paths.append(
+                    candidate if osp.exists(candidate) else self.
+                    _resolve_path(p))
         return paths
 
     def load_annotations(self, img_dir, img_suffix, ann_dir, seg_map_suffix,
@@ -107,9 +103,8 @@ class MedNpyListDataset(CustomDataset):
         if self.ann_list is not None:
             ann_paths = self._read_list(self.ann_list)
             if len(img_paths) != len(ann_paths):
-                raise ValueError(
-                    f'Image and annotation list lengths differ: '
-                    f'{len(img_paths)} vs {len(ann_paths)}')
+                raise ValueError(f'Image and annotation list lengths differ: '
+                                 f'{len(img_paths)} vs {len(ann_paths)}')
         elif not self.test_mode:
             raise ValueError('ann_list must be set when test_mode=False')
 
@@ -151,8 +146,7 @@ class MedNpyListDataset(CustomDataset):
                  logger=None,
                  efficient_test=False,
                  **kwargs):
-        if medpy_assd is None:
-            raise ImportError('medpy is required to compute ASSD metrics')
+        require_medpy()
 
         if isinstance(metric, str):
             metric = [metric]
@@ -182,7 +176,8 @@ class MedNpyListDataset(CustomDataset):
                 if pred.endswith('.npy'):
                     pred_arr = np.load(pred)
                 else:
-                    pred_arr = mmcv.imread(pred, flag='unchanged', backend='pillow')
+                    pred_arr = mmcv.imread(
+                        pred, flag='unchanged', backend='pillow')
             else:
                 pred_arr = pred
             if isinstance(gt, str):
@@ -222,12 +217,13 @@ class MedNpyListDataset(CustomDataset):
         print_log('\n' + assd_table.get_string(), logger=logger)
 
         summary_table = PrettyTable()
-        summary_table.add_column('mDice', [np.round(eval_results['mDice'] * 100, 2)])
+        summary_table.add_column('mDice',
+                                 [np.round(eval_results['mDice'] * 100, 2)])
         summary_table.add_column('mASSD', [np.round(eval_results['mASSD'], 4)])
         print_log('Summary:', logger)
         print_log('\n' + summary_table.get_string(), logger=logger)
 
-        if mmcv.is_list_of(results, str):
+        if mmengine.is_list_of(results, str):
             for file_name in results:
                 os.remove(file_name)
 

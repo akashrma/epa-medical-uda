@@ -2,41 +2,45 @@
 # Modifications: Also save config as json file
 
 import argparse
+import sys
+from pathlib import Path
 
-from mmcv import Config, DictAction
+ROOT = str(Path(__file__).resolve().parents[1])
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
-from mmseg.apis import init_segmentor
+# isort:skip_file
+
+from mmengine.config import Config, DictAction
+
+from mmseg.engine.config import student_config, translate_legacy_config
+from mmseg.models import build_segmentor
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description='Print the whole config')
-    parser.add_argument('config', help='config file path')
+def main(argv=None):
+    parser = argparse.ArgumentParser(description='Print the inherited config')
+    parser.add_argument('config')
+    parser.add_argument('--graph', action='store_true')
+    parser.add_argument('--native', action='store_true')
+    parser.add_argument('--out', help='Save config as a Python file')
     parser.add_argument(
-        '--graph', action='store_true', help='print the models graph')
-    parser.add_argument(
-        '--options', nargs='+', action=DictAction, help='arguments in dict')
-    args = parser.parse_args()
-
-    return args
-
-
-def main():
-    args = parse_args()
-
+        '--options', '--cfg-options', nargs='+', action=DictAction)
+    args = parser.parse_args(argv)
     cfg = Config.fromfile(args.config)
-    if args.options is not None:
+    if args.options:
         cfg.merge_from_dict(args.options)
-    print(f'Config:\n{cfg.pretty_text}')
-    # dump config
-    cfg.dump('example.py')
-    super(Config, cfg).__setattr__('_filename', 'example.json')
-    cfg.dump('example.json')
-    # dump models graph
+    if args.native:
+        cfg = translate_legacy_config(cfg)
+    print(cfg.pretty_text)
+    if args.out:
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        cfg.dump(args.out)
     if args.graph:
-        model = init_segmentor(args.config, device='cpu')
-        print(f'Model graph:\n{str(model)}')
-        with open('example-graph.txt', 'w') as f:
-            f.writelines(str(model))
+        model_cfg = student_config(cfg)
+        model_cfg['pretrained'] = None
+        model_cfg['train_cfg'] = None
+        print(build_segmentor(model_cfg))
+    return cfg
 
 
 if __name__ == '__main__':

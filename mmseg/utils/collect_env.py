@@ -4,8 +4,8 @@
 import os
 import tarfile
 
-from mmcv.utils import collect_env as collect_base_env
-from mmcv.utils import get_git_hash
+from mmengine.utils import get_git_hash
+from mmengine.utils.dl_utils import collect_env as collect_base_env
 
 import mmseg
 
@@ -19,9 +19,16 @@ def collect_env():
 
 
 def is_source_file(x):
-    if x.isdir() or x.name.endswith(('.py', '.sh', '.yml', '.json', '.txt')) \
-            and '.mim' not in x.name and 'jobs/' not in x.name:
-        # print(x.name)
+    excluded = {
+        'data', 'pretrained', 'work_dirs', 'configs/generated', '.git',
+        '.codex', '.agents', '__pycache__', '.mim', 'jobs'
+    }
+    parts = x.name.removeprefix('./').split('/')
+    generated = '/'.join(parts[:2]) == 'configs/generated'
+    if any(part in excluded for part in parts) or generated or x.issym():
+        return None
+    suffixes = ('.py', '.sh', '.yml', '.json', '.txt', '.md', '.cfg')
+    if x.isdir() or x.name.endswith(suffixes):
         return x
     else:
         return None

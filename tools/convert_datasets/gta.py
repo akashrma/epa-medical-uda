@@ -6,10 +6,10 @@
 
 import argparse
 import json
-import os.path as osp
-
 import mmcv
 import numpy as np
+import os.path as osp
+from mmengine.utils import mkdir_or_exist, scandir
 from PIL import Image
 
 
@@ -91,12 +91,12 @@ def main():
     args = parse_args()
     gta_path = args.gta_path
     out_dir = args.out_dir if args.out_dir else gta_path
-    mmcv.mkdir_or_exist(out_dir)
+    mkdir_or_exist(out_dir)
 
     gt_dir = osp.join(gta_path, args.gt_dir)
 
     poly_files = []
-    for poly in mmcv.scandir(
+    for poly in scandir(
             gt_dir, suffix=tuple(f'{i}.png' for i in range(10)),
             recursive=True):
         poly_file = osp.join(gt_dir, poly)

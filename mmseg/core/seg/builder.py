@@ -1,10 +1,10 @@
 # Obtained from: https://github.com/open-mmlab/mmsegmentation/tree/v0.16.0
 
-from mmcv.utils import Registry, build_from_cfg
+from mmseg.registry import TASK_UTILS
 
-PIXEL_SAMPLERS = Registry('pixel sampler')
+PIXEL_SAMPLERS = TASK_UTILS
 
 
 def build_pixel_sampler(cfg, **default_args):
     """Build pixel sampler for segmentation map."""
-    return build_from_cfg(cfg, PIXEL_SAMPLERS, default_args)
+    return PIXEL_SAMPLERS.build(cfg, default_args=default_args)

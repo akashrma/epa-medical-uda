@@ -1,30 +1,24 @@
 import mmcv
+import mmengine
+from mmengine.utils import digit_version
 
 from .version import __version__, version_info
 
-MMCV_MIN = '1.3.7'
-MMCV_MAX = '1.4.0'
-
-
-def digit_version(version_str):
-    digit_version = []
-    for x in version_str.split('.'):
-        if x.isdigit():
-            digit_version.append(int(x))
-        elif x.find('rc') != -1:
-            patch_version = x.split('rc')
-            digit_version.append(int(patch_version[0]) - 1)
-            digit_version.append(int(patch_version[1]))
-    return digit_version
-
+MMCV_MIN = '2.1.0'
+MMCV_MAX = '2.1.0'
+MMENGINE_VERSION = '0.10.7'
 
 mmcv_min_version = digit_version(MMCV_MIN)
 mmcv_max_version = digit_version(MMCV_MAX)
 mmcv_version = digit_version(mmcv.__version__)
 
+assert (mmcv_min_version <= mmcv_version <= mmcv_max_version), (
+    f'MMCV=={mmcv.__version__} is used but incompatible. '
+    f'This fork qualifies mmcv=={MMCV_MIN}; see ENVIRONMENT_MMCV2.md.')
 
-assert (mmcv_min_version <= mmcv_version <= mmcv_max_version), \
-    f'MMCV=={mmcv.__version__} is used but incompatible. ' \
-    f'Please install mmcv>={mmcv_min_version}, <={mmcv_max_version}.'
+assert digit_version(
+    mmengine.__version__) == digit_version(MMENGINE_VERSION), (
+        f'MMEngine=={mmengine.__version__} is used but unqualified. '
+        f'Please install mmengine=={MMENGINE_VERSION}.')
 
 __all__ = ['__version__', 'version_info']

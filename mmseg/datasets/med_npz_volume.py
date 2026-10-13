@@ -1,25 +1,21 @@
 # Dataset for .npz volumes (arr_0=image, arr_1=label) with slice-wise inference
 # and volume-level evaluation to match SE_ASA/domain_adaptation/eval_UDA.py.
 
+import mmcv
+import mmengine
+import numpy as np
 import os
 import os.path as osp
-
-import mmcv
-import numpy as np
-from mmcv.utils import print_log
+from collections import OrderedDict
+from mmengine.logging import print_log
 from prettytable import PrettyTable
 
+from mmseg.core.evaluation.medical_metrics import legacy_assd as medpy_assd
+from mmseg.core.evaluation.medical_metrics import legacy_dc as medpy_dc
+from mmseg.core.evaluation.medical_metrics import require_medpy
 from mmseg.utils import get_root_logger
 from .builder import DATASETS
 from .custom import CustomDataset
-from collections import OrderedDict
-
-try:
-    from medpy.metric.binary import assd as medpy_assd
-    from medpy.metric.binary import dc as medpy_dc
-except ImportError:  # pragma: no cover - optional dependency
-    medpy_assd = None
-    medpy_dc = None
 
 
 @DATASETS.register_module()
@@ -78,7 +74,8 @@ class MedNpzVolumeDataset(CustomDataset):
         file_dir = osp.dirname(__file__)  # .../MIC/seg/mmseg/datasets
         seg_root = osp.abspath(osp.join(file_dir, '..', '..'))  # .../MIC/seg
         mic_root = osp.abspath(osp.join(file_dir, '..', '..', '..'))  # .../MIC
-        repo_root = osp.abspath(osp.join(file_dir, '..', '..', '..', '..'))  # .../medUDA
+        repo_root = osp.abspath(osp.join(file_dir, '..', '..', '..',
+                                         '..'))  # .../medUDA
         launch_root = os.getcwd()
         candidates.extend([
             osp.join(launch_root, path),
@@ -108,14 +105,16 @@ class MedNpzVolumeDataset(CustomDataset):
     def _read_list(self, list_path):
         base_dir = osp.dirname(list_path)
         paths = []
-        for p in mmcv.list_from_file(list_path):
+        for p in mmengine.list_from_file(list_path):
             if not p:
                 continue
             if osp.isabs(p):
                 paths.append(p)
             else:
                 candidate = osp.abspath(osp.join(base_dir, p))
-                paths.append(candidate if osp.exists(candidate) else self._resolve_path(p))
+                paths.append(
+                    candidate if osp.exists(candidate) else self.
+                    _resolve_path(p))
         return paths
 
     def load_annotations(self, img_dir, img_suffix, ann_dir, seg_map_suffix,
@@ -203,8 +202,7 @@ class MedNpzVolumeDataset(CustomDataset):
                  logger=None,
                  efficient_test=False,
                  **kwargs):
-        if medpy_dc is None:
-            raise ImportError('medpy is required to compute Dice metrics')
+        require_medpy()
 
         if isinstance(metric, str):
             metric = [metric]
@@ -214,8 +212,8 @@ class MedNpzVolumeDataset(CustomDataset):
         if not set(metric).issubset(set(allowed_metrics)):
             raise KeyError('metric {} is not supported'.format(metric))
         compute_assd = 'mASSD' in metric
-        if compute_assd and medpy_assd is None:
-            raise ImportError('medpy is required to compute ASSD metrics')
+        if compute_assd:
+            require_medpy()
 
         num_classes = len(self.CLASSES)
         class_names_no_bg = self.CLASSES[1:]
@@ -229,7 +227,8 @@ class MedNpzVolumeDataset(CustomDataset):
                 if pred.endswith('.npy'):
                     pred_arr = np.load(pred)
                 else:
-                    pred_arr = mmcv.imread(pred, flag='unchanged', backend='pillow')
+                    pred_arr = mmcv.imread(
+                        pred, flag='unchanged', backend='pillow')
             else:
                 pred_arr = pred
 
@@ -280,10 +279,10 @@ class MedNpzVolumeDataset(CustomDataset):
         # Logging (match eval_UDA style with mean/std)
         dice_table = PrettyTable()
         dice_table.add_column('Class', class_names_no_bg)
-        dice_table.add_column(
-            'Dice (mean±std)',
-            [f'{m * 100:.1f}({s * 100:.1f})' for m, s in zip(dice_mean, dice_std)]
-        )
+        dice_table.add_column('Dice (mean±std)', [
+            f'{m * 100:.1f}({s * 100:.1f})'
+            for m, s in zip(dice_mean, dice_std)
+        ])
         print_log('Per-class Dice (exclude background):', logger)
         print_log('\n' + dice_table.get_string(), logger=logger)
         if compute_assd:
@@ -291,19 +290,20 @@ class MedNpzVolumeDataset(CustomDataset):
             assd_table.add_column('Class', class_names_no_bg)
             assd_table.add_column(
                 'ASSD (mean±std)',
-                [f'{m:.1f}({s:.1f})' for m, s in zip(assd_mean, assd_std)]
-            )
+                [f'{m:.1f}({s:.1f})' for m, s in zip(assd_mean, assd_std)])
             print_log('Per-class ASSD (exclude background):', logger)
             print_log('\n' + assd_table.get_string(), logger=logger)
 
         summary_table = PrettyTable()
-        summary_table.add_column('mDice', [np.round(eval_results['mDice'] * 100, 2)])
+        summary_table.add_column('mDice',
+                                 [np.round(eval_results['mDice'] * 100, 2)])
         if compute_assd:
-            summary_table.add_column('mASSD', [np.round(eval_results['mASSD'], 4)])
+            summary_table.add_column('mASSD',
+                                     [np.round(eval_results['mASSD'], 4)])
         print_log('Summary:', logger)
         print_log('\n' + summary_table.get_string(), logger=logger)
 
-        if mmcv.is_list_of(results, str):
+        if mmengine.is_list_of(results, str):
             for file_name in results:
                 os.remove(file_name)
 

@@ -1,11 +1,11 @@
 # Copyright (c) Open-MMLab. All rights reserved.
 
-__version__ = '0.16.0'
+__version__ = '0.16.0+mmcv2'
 
 
 def parse_version_info(version_str):
     version_info = []
-    for x in version_str.split('.'):
+    for x in version_str.split('+')[0].split('.'):
         if x.isdigit():
             version_info.append(int(x))
         elif x.find('rc') != -1:

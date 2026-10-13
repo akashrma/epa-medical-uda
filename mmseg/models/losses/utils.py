@@ -1,10 +1,9 @@
 # Obtained from: https://github.com/open-mmlab/mmsegmentation/tree/v0.16.0
 
 import functools
-
-import mmcv
 import numpy as np
 import torch.nn.functional as F
+from mmengine.fileio import load
 
 
 def get_class_weight(class_weight):
@@ -20,7 +19,7 @@ def get_class_weight(class_weight):
             class_weight = np.load(class_weight)
         else:
             # pkl, json or yaml
-            class_weight = mmcv.load(class_weight)
+            class_weight = load(class_weight)
 
     return class_weight
 

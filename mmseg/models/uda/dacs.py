@@ -15,15 +15,16 @@
 # Copyright (c) 2020 vikolss. Licensed under the MIT License.
 # A copy of the license is available at resources/license_dacs
 
+import hashlib
+import json
 import math
+import numpy as np
 import os
 import random
-from copy import deepcopy
-
-import mmcv
-import numpy as np
 import torch
+from copy import deepcopy
 from matplotlib import pyplot as plt
+from mmengine.logging import print_log
 from timm.models.layers import DropPath
 from torch.nn import functional as F
 from torch.nn.modules.dropout import _DropoutNd
@@ -34,10 +35,9 @@ from mmseg.models.segmentors.hrda_encoder_decoder import crop
 from mmseg.models.uda.masking_consistency_module import \
     MaskingConsistencyModule
 from mmseg.models.uda.uda_decorator import UDADecorator, get_module
-from mmseg.models.utils.dacs_transforms import (denorm, get_class_masks,
-                                                get_mean_std,
-                                                strong_transform,
-                                                fda_source_to_target)
+from mmseg.models.utils.dacs_transforms import (denorm, fda_source_to_target,
+                                                get_class_masks, get_mean_std,
+                                                strong_transform)
 from mmseg.models.utils.etf_prototypes import (generate_etf_class_prototypes,
                                                get_default_etf_dir,
                                                load_etf_class_prototypes)
@@ -70,6 +70,15 @@ class DACS(UDADecorator):
 
     def __init__(self, **cfg):
         super(DACS, self).__init__(**cfg)
+        # State-dict keys remain compatible with legacy weights; runtime
+        # state is saved separately by the native checkpoint hook.
+        resume_cfg = deepcopy(cfg)
+        resume_cfg.pop('train_cfg', None)
+        resume_cfg.pop('test_cfg', None)
+        resume_cfg['model'].get('train_cfg', {}).pop('work_dir', None)
+        self._resume_signature = hashlib.sha256(
+            json.dumps(resume_cfg, sort_keys=True,
+                       default=str).encode()).hexdigest()
         self.local_iter = 0
         self.max_iters = cfg['max_iters']
         self.source_only = cfg['source_only']
@@ -117,19 +126,17 @@ class DACS(UDADecorator):
             self.etf_contrastive_target_lambda > 0
         self.prototype_mode = cfg.get('prototype_mode', 'none')
         self.dynamic_proto_momentum = cfg.get('dynamic_proto_momentum', 0.99)
-        self.dynamic_proto_min_pixels = cfg.get('dynamic_proto_min_pixels',
-                                                16)
+        self.dynamic_proto_min_pixels = cfg.get('dynamic_proto_min_pixels', 16)
         self.dynamic_proto_source_lambda = cfg.get(
             'dynamic_proto_source_lambda', 0.0)
         self.dynamic_proto_target_lambda = cfg.get(
             'dynamic_proto_target_lambda', 0.0)
         self.dynamic_proto_target_start_iter = cfg.get(
             'dynamic_proto_target_start_iter', self.mix_start_iter)
-        self.dynamic_proto_temperature = cfg.get(
-            'dynamic_proto_temperature', 0.07)
+        self.dynamic_proto_temperature = cfg.get('dynamic_proto_temperature',
+                                                 0.07)
         self.dynamic_proto_target_temperature = cfg.get(
-            'dynamic_proto_target_temperature',
-            self.dynamic_proto_temperature)
+            'dynamic_proto_target_temperature', self.dynamic_proto_temperature)
         self.dynamic_proto_ignore_background = cfg.get(
             'dynamic_proto_ignore_background', False)
         self.enable_dynamic_proto = self.prototype_mode == 'source_ema' and (
@@ -150,14 +157,14 @@ class DACS(UDADecorator):
         if self.enable_dynamic_proto and self.dynamic_proto_feature_dim:
             self.register_buffer(
                 'source_prototypes',
-                torch.zeros((self.num_classes,
-                             int(self.dynamic_proto_feature_dim))))
-            self.register_buffer('source_proto_valid',
-                                 torch.zeros((self.num_classes, ),
-                                             dtype=torch.bool))
-            self.register_buffer('source_proto_seen',
-                                 torch.zeros((self.num_classes, ),
-                                             dtype=torch.long))
+                torch.zeros(
+                    (self.num_classes, int(self.dynamic_proto_feature_dim))))
+            self.register_buffer(
+                'source_proto_valid',
+                torch.zeros((self.num_classes, ), dtype=torch.bool))
+            self.register_buffer(
+                'source_proto_seen',
+                torch.zeros((self.num_classes, ), dtype=torch.long))
         else:
             self.register_buffer('source_prototypes', torch.empty(0))
             self.register_buffer('source_proto_valid',
@@ -178,6 +185,20 @@ class DACS(UDADecorator):
         self.etf_prototype_dir = get_default_etf_dir()
         self.etf_prototypes = None
         self.source_class_means = None
+        self._active_optim_wrapper = None
+        if self.enable_etf_contrastive or self.enable_etf_contrastive_target \
+                or self.enable_dynamic_proto:
+            head = self.get_model().decode_head
+            if not hasattr(head, 'linear_pred'):
+                raise ValueError(
+                    'Prototype training needs linear_pred features')
+            head.latest_linear_pred_input = None
+
+            def capture_prelogit(module, inputs, output):
+                head.latest_linear_pred_input = inputs[0]
+
+            self.get_model().linear_pred_input_hook_handle = \
+                head.linear_pred.register_forward_hook(capture_prelogit)
 
     def _maybe_apply_fda(self, img, target_img, mean, std):
         if not self.fda_source_to_target:
@@ -209,8 +230,7 @@ class DACS(UDADecorator):
         else:
             gt_resized = gt_semantic_seg
         gt_flat = gt_resized.squeeze(1).reshape(-1)
-        feat_flat = feat_map.permute(0, 2, 3, 1).reshape(-1,
-                                                         feat_map.shape[1])
+        feat_flat = feat_map.permute(0, 2, 3, 1).reshape(-1, feat_map.shape[1])
 
         means = torch.zeros((num_classes, feat_map.shape[1]),
                             device=feat_map.device)
@@ -220,8 +240,7 @@ class DACS(UDADecorator):
                 means[cls] = feat_flat[mask].mean(dim=0)
         return means
 
-    def _compute_class_feature_means_and_mask(self, feat_map,
-                                              gt_semantic_seg):
+    def _compute_class_feature_means_and_mask(self, feat_map, gt_semantic_seg):
         num_classes = self.num_classes
         ignore_index = self.get_model().decode_head.ignore_index
         if gt_semantic_seg.dim() == 3:
@@ -234,12 +253,12 @@ class DACS(UDADecorator):
         else:
             gt_resized = gt_semantic_seg
         gt_flat = gt_resized.squeeze(1).reshape(-1)
-        feat_flat = feat_map.permute(0, 2, 3, 1).reshape(-1,
-                                                         feat_map.shape[1])
+        feat_flat = feat_map.permute(0, 2, 3, 1).reshape(-1, feat_map.shape[1])
 
         means = torch.zeros((num_classes, feat_map.shape[1]),
                             device=feat_map.device)
-        present = torch.zeros((num_classes, ), device=feat_map.device,
+        present = torch.zeros((num_classes, ),
+                              device=feat_map.device,
                               dtype=torch.bool)
         for cls in range(num_classes):
             if cls == ignore_index:
@@ -279,14 +298,15 @@ class DACS(UDADecorator):
             weight_flat = pixel_weight.squeeze(1).reshape(-1)
 
         gt_flat = gt_resized.squeeze(1).reshape(-1)
-        feat_flat = feat_map.permute(0, 2, 3, 1).reshape(-1,
-                                                         feat_map.shape[1])
+        feat_flat = feat_map.permute(0, 2, 3, 1).reshape(-1, feat_map.shape[1])
 
         means = torch.zeros((num_classes, feat_map.shape[1]),
                             device=feat_map.device)
-        present = torch.zeros((num_classes, ), device=feat_map.device,
+        present = torch.zeros((num_classes, ),
+                              device=feat_map.device,
                               dtype=torch.bool)
-        counts = torch.zeros((num_classes, ), device=feat_map.device,
+        counts = torch.zeros((num_classes, ),
+                             device=feat_map.device,
                              dtype=torch.long)
         for cls in range(num_classes):
             if cls == ignore_index:
@@ -309,12 +329,14 @@ class DACS(UDADecorator):
             return
         feature_dim = feat_map.shape[1]
         device = feat_map.device
-        self.source_prototypes = torch.zeros(
-            (self.num_classes, feature_dim), device=device)
-        self.source_proto_valid = torch.zeros(
-            (self.num_classes, ), device=device, dtype=torch.bool)
-        self.source_proto_seen = torch.zeros(
-            (self.num_classes, ), device=device, dtype=torch.long)
+        self.source_prototypes = torch.zeros((self.num_classes, feature_dim),
+                                             device=device)
+        self.source_proto_valid = torch.zeros((self.num_classes, ),
+                                              device=device,
+                                              dtype=torch.bool)
+        self.source_proto_seen = torch.zeros((self.num_classes, ),
+                                             device=device,
+                                             dtype=torch.long)
 
     def _update_source_ema_prototypes(self, feat_map, gt_semantic_seg):
         if not self.enable_dynamic_proto or feat_map is None:
@@ -325,8 +347,7 @@ class DACS(UDADecorator):
                 feat_map.detach(),
                 gt_semantic_seg,
                 min_pixels=self.dynamic_proto_min_pixels)
-            present_classes = torch.nonzero(
-                present, as_tuple=False).squeeze(1)
+            present_classes = torch.nonzero(present, as_tuple=False).squeeze(1)
             momentum = float(self.dynamic_proto_momentum)
             for cls in present_classes.tolist():
                 mean = F.normalize(means[cls], p=2, dim=0)
@@ -370,12 +391,15 @@ class DACS(UDADecorator):
         if prototypes.shape[0] > 1:
             prototypes = F.normalize(prototypes, p=2, dim=1)
             cos = torch.matmul(prototypes, prototypes.t())
-            off_diag = cos[~torch.eye(
-                cos.shape[0], dtype=torch.bool, device=cos.device)]
+            off_diag = cos[
+                ~torch.eye(cos.shape[0], dtype=torch.bool, device=cos.device)]
             stats.update({
-                'min_pairwise_cos': float(off_diag.min().detach().item()),
-                'mean_pairwise_cos': float(off_diag.mean().detach().item()),
-                'max_pairwise_cos': float(off_diag.max().detach().item()),
+                'min_pairwise_cos':
+                float(off_diag.min().detach().item()),
+                'mean_pairwise_cos':
+                float(off_diag.mean().detach().item()),
+                'max_pairwise_cos':
+                float(off_diag.max().detach().item()),
             })
         return stats
 
@@ -408,7 +432,7 @@ class DACS(UDADecorator):
         target_positions = []
         for cls in present_classes.tolist():
             match = torch.nonzero(
-                candidate_classes == cls, as_tuple=False).squeeze(1)
+                    candidate_classes == cls, as_tuple=False).squeeze(1)
             if match.numel() > 0:
                 target_positions.append(match[0])
         if len(target_positions) == 0:
@@ -416,8 +440,8 @@ class DACS(UDADecorator):
         targets = torch.stack(target_positions).to(feat_map.device)
 
         if use_target_temp:
-            temperature = max(float(self.dynamic_proto_target_temperature),
-                              1e-6)
+            temperature = max(
+                float(self.dynamic_proto_target_temperature), 1e-6)
             weight = self.dynamic_proto_target_lambda
         else:
             temperature = max(float(self.dynamic_proto_temperature), 1e-6)
@@ -429,7 +453,10 @@ class DACS(UDADecorator):
         log_vars.pop('loss', None)
         return loss, log_vars
 
-    def _calc_etf_contrastive_loss(self, feat_map, gt_semantic_seg, *,
+    def _calc_etf_contrastive_loss(self,
+                                   feat_map,
+                                   gt_semantic_seg,
+                                   *,
                                    use_target_temp=False):
         if feat_map is None or self.etf_prototypes is None:
             return None, {'loss_etf_contrastive': 0.0}
@@ -442,8 +469,8 @@ class DACS(UDADecorator):
         prototypes = F.normalize(self.etf_prototypes.detach(), p=2, dim=1)
         means = F.normalize(means[present_classes], p=2, dim=1)
         if use_target_temp:
-            temperature = max(float(self.etf_contrastive_target_temperature),
-                              1e-6)
+            temperature = max(
+                float(self.etf_contrastive_target_temperature), 1e-6)
             weight = self.etf_contrastive_target_lambda
         else:
             temperature = max(float(self.etf_contrastive_temperature), 1e-6)
@@ -452,8 +479,7 @@ class DACS(UDADecorator):
         logits = torch.matmul(means, prototypes.t()) / temperature
         targets = present_classes.to(logits.device)
         loss = weight * F.cross_entropy(logits, targets)
-        loss, log_vars = self._parse_losses(
-            {'loss_etf_contrastive': loss})
+        loss, log_vars = self._parse_losses({'loss_etf_contrastive': loss})
         log_vars.pop('loss', None)
         return loss, log_vars
 
@@ -461,7 +487,7 @@ class DACS(UDADecorator):
         if self.etf_prototypes is not None:
             return
         if feat_map is None:
-            mmcv.print_log(
+            print_log(
                 'ETF prototypes not initialized: missing pre-logit features.',
                 'mmseg')
             return
@@ -479,15 +505,13 @@ class DACS(UDADecorator):
                 num_classes,
                 device=feat_map.device,
                 save_dir=self.etf_prototype_dir)
-            mmcv.print_log(
+            print_log(
                 f'Generated ETF prototypes: K={num_classes}, D={feature_dim} '
-                f'at {self.etf_prototype_dir}.',
-                'mmseg')
+                f'at {self.etf_prototype_dir}.', 'mmseg')
         else:
-            mmcv.print_log(
+            print_log(
                 f'Loaded ETF prototypes: K={num_classes}, D={feature_dim} '
-                f'from {self.etf_prototype_dir}.',
-                'mmseg')
+                f'from {self.etf_prototype_dir}.', 'mmseg')
 
         self.etf_prototypes = prototypes
         self.source_class_means = self._compute_class_feature_means(
@@ -527,51 +551,78 @@ class DACS(UDADecorator):
                     alpha_teacher * ema_param[:].data[:] + \
                     (1 - alpha_teacher) * param[:].data[:]
 
-    def train_step(self, data_batch, optimizer, **kwargs):
-        """The iteration step during training.
+    def train_step(self, data_batch, optim_wrapper):
+        """Preprocess, clear gradients, run UDA backwards, then update once.
 
-        This method defines an iteration step during training, except for the
-        back propagation and optimizer updating, which are done in an optimizer
-        hook. Note that in some complicated cases or models, the whole process
-        including back propagation and optimizer updating is also defined in
-        this method, such as GAN.
-
-        Args:
-            data (dict): The output of dataloader.
-            optimizer (:obj:`torch.optim.Optimizer` | dict): The optimizer of
-                runner is passed to ``train_step()``. This argument is unused
-                and reserved.
-
-        Returns:
-            dict: It should contain at least 3 keys: ``loss``, ``log_vars``,
-                ``num_samples``.
-                ``loss`` is a tensor for back propagation, which can be a
-                weighted sum of multiple losses.
-                ``log_vars`` contains all the variables to be sent to the
-                logger.
-                ``num_samples`` indicates the batch size (when the model is
-                DDP, it means the batch size on each GPU), which is used for
-                averaging the logs.
+        Forward_train owns the ordered backward passes. Returning native
+        scalar log variables prevents the runner doing another backward.
         """
 
-        optimizer.zero_grad()
-        log_vars = self(**data_batch)
-        optimizer.step()
+        from mmseg.engine.optim import UDAOptimWrapper
+        if not isinstance(optim_wrapper, UDAOptimWrapper):
+            raise TypeError('DACS requires the FP32 UDAOptimWrapper')
+        data_batch = self.data_preprocessor(data_batch, training=True)
+        self._active_optim_wrapper = optim_wrapper
+        try:
+            with optim_wrapper.optim_context(self):
+                optim_wrapper.zero_grad(set_to_none=False)
+                log_vars = self(**data_batch, mode='loss')
+                optim_wrapper.step()
+        finally:
+            self._active_optim_wrapper = None
 
         log_vars.pop('loss', None)  # remove the unnecessary 'loss'
-        outputs = dict(
-            log_vars=log_vars, num_samples=len(data_batch['img_metas']))
-        return outputs
+        return log_vars
+
+    def _backward(self, loss, **kwargs):
+        if self._active_optim_wrapper is None:
+            raise RuntimeError('Run UDA optimization through train_step')
+        self._active_optim_wrapper.backward(loss, **kwargs)
+
+    def get_training_state(self):
+
+        def cpu_copy(value):
+            return None if value is None else value.detach().cpu().clone()
+
+        return dict(
+            version=1,
+            local_iter=self.local_iter,
+            max_iters=self.max_iters,
+            signature=self._resume_signature,
+            etf_prototypes=cpu_copy(self.etf_prototypes),
+            source_class_means=cpu_copy(self.source_class_means),
+            class_probs=deepcopy(self.class_probs))
+
+    def load_training_state(self, state):
+        if state.get('version') != 1 or \
+                state.get('signature') != self._resume_signature or \
+                state.get('max_iters') != self.max_iters:
+            raise ValueError('UDA checkpoint configuration does not match')
+        self.local_iter = int(state['local_iter'])
+        if not 0 <= self.local_iter <= self.max_iters:
+            raise ValueError('Invalid saved UDA iteration')
+        device = next(self.parameters()).device
+        for name in ('etf_prototypes', 'source_class_means'):
+            value = state[name]
+            setattr(self, name, None if value is None else value.to(device))
+        self.class_probs = deepcopy(state['class_probs'])
+        if self.local_iter > 0 and not self.source_only:
+            for parameter in self.get_ema_model().parameters():
+                parameter.requires_grad_(False)
+        if self.local_iter > 0 and self.mic is not None and \
+                self.mic.teacher is not None:
+            for parameter in self.mic.teacher.get_ema_model().parameters():
+                parameter.requires_grad_(False)
 
     def masked_feat_dist(self, f1, f2, mask=None):
         feat_diff = f1 - f2
-        # mmcv.print_log(f'fdiff: {feat_diff.shape}', 'mmseg')
+        # print_log(f'fdiff: {feat_diff.shape}', 'mmseg')
         pw_feat_dist = torch.norm(feat_diff, dim=1, p=2)
-        # mmcv.print_log(f'pw_fdist: {pw_feat_dist.shape}', 'mmseg')
+        # print_log(f'pw_fdist: {pw_feat_dist.shape}', 'mmseg')
         if mask is not None:
-            # mmcv.print_log(f'fd mask: {mask.shape}', 'mmseg')
+            # print_log(f'fd mask: {mask.shape}', 'mmseg')
             pw_feat_dist = pw_feat_dist[mask.squeeze(1)]
-            # mmcv.print_log(f'fd masked: {pw_feat_dist.shape}', 'mmseg')
+            # print_log(f'fd masked: {pw_feat_dist.shape}', 'mmseg')
         # If the mask is empty, the mean will be NaN. However, as there is
         # no connection in the compute graph to the network weights, the
         # network gradients are zero and no weight update will happen.
@@ -752,7 +803,8 @@ class DACS(UDADecorator):
         seg_debug['Source'] = self.get_model().debug_output
         clean_loss, clean_log_vars = self._parse_losses(clean_losses)
         log_vars.update(clean_log_vars)
-        clean_loss.backward(
+        self._backward(
+            clean_loss,
             retain_graph=self.enable_fdist or self.enable_etf_contrastive
             or self.enable_dynamic_proto_source)
         if self.print_grad_magnitude:
@@ -761,7 +813,7 @@ class DACS(UDADecorator):
                 p.grad.detach().clone() for p in params if p.grad is not None
             ]
             grad_mag = calc_grad_magnitude(seg_grads)
-            mmcv.print_log(f'Seg. Grad.: {grad_mag}', 'mmseg')
+            print_log(f'Seg. Grad.: {grad_mag}', 'mmseg')
 
         # Source ETF contrastive loss
         if self.enable_etf_contrastive:
@@ -769,7 +821,7 @@ class DACS(UDADecorator):
                 src_prelogit, gt_semantic_seg)
             log_vars.update(add_prefix(etf_log, 'src'))
             if etf_loss is not None:
-                etf_loss.backward()
+                self._backward(etf_loss)
                 del etf_loss
 
         # Source dynamic prototype loss. Source anchors are updated only from
@@ -779,7 +831,7 @@ class DACS(UDADecorator):
                 src_prelogit, gt_semantic_seg)
             log_vars.update(add_prefix(proto_log, 'src'))
             if proto_loss is not None:
-                proto_loss.backward()
+                self._backward(proto_loss)
                 del proto_loss
 
         # ImageNet feature distance
@@ -787,7 +839,7 @@ class DACS(UDADecorator):
             feat_loss, feat_log = self.calc_feat_dist(img, gt_semantic_seg,
                                                       src_feat)
             log_vars.update(add_prefix(feat_log, 'src'))
-            feat_loss.backward()
+            self._backward(feat_loss)
             if self.print_grad_magnitude:
                 params = self.get_model().backbone.parameters()
                 fd_grads = [
@@ -795,7 +847,7 @@ class DACS(UDADecorator):
                 ]
                 fd_grads = [g2 - g1 for g1, g2 in zip(seg_grads, fd_grads)]
                 grad_mag = calc_grad_magnitude(fd_grads)
-                mmcv.print_log(f'Fdist Grad.: {grad_mag}', 'mmseg')
+                print_log(f'Fdist Grad.: {grad_mag}', 'mmseg')
         del src_feat, clean_loss
         if self.enable_fdist:
             del feat_loss
@@ -828,9 +880,9 @@ class DACS(UDADecorator):
                 self.etf_contrastive_target_start_iter
 
             # Target prototype losses start after their warmup.
-            if (self.enable_etf_contrastive_target and do_etf_proto_target) or (
-                    self.enable_dynamic_proto_target
-                    and do_dynamic_proto_target):
+            if (self.enable_etf_contrastive_target and
+                    do_etf_proto_target) or (self.enable_dynamic_proto_target
+                                             and do_dynamic_proto_target):
                 feats = self.get_model().extract_feat(target_img)
                 _ = self.get_model().decode_head(feats)
                 tgt_prelogit = getattr(self.get_model().decode_head,
@@ -841,12 +893,10 @@ class DACS(UDADecorator):
             # Target ETF contrastive loss starts after its target warmup.
             if self.enable_etf_contrastive_target and do_etf_proto_target:
                 tgt_loss, tgt_log = self._calc_etf_contrastive_loss(
-                    tgt_prelogit,
-                    pseudo_label,
-                    use_target_temp=True)
+                    tgt_prelogit, pseudo_label, use_target_temp=True)
                 log_vars.update(add_prefix(tgt_log, 'tgt'))
                 if tgt_loss is not None:
-                    tgt_loss.backward()
+                    self._backward(tgt_loss)
                     del tgt_loss
 
             # Target dynamic prototype loss explicitly aligns target class
@@ -859,13 +909,13 @@ class DACS(UDADecorator):
                     use_target_temp=True)
                 log_vars.update(add_prefix(tgt_proto_log, 'tgt'))
                 if tgt_proto_loss is not None:
-                    tgt_proto_loss.backward()
+                    self._backward(tgt_proto_loss)
                     del tgt_proto_loss
 
             mixed_img, mixed_lbl = [None] * batch_size, [None] * batch_size
             mixed_seg_weight = pseudo_weight.clone()
             if self.mix == 'class':
-                # Apply class mixing between source labels and target pseudo-labels.
+                # Mix source labels and target pseudo-labels by class.
                 mix_masks = get_class_masks(
                     gt_semantic_seg, class_mix_ignore=self.class_mix_ignore)
             else:
@@ -883,8 +933,7 @@ class DACS(UDADecorator):
                         (gt_semantic_seg[i][0], pseudo_label[i])))
                 _, mixed_seg_weight[i] = strong_transform(
                     strong_parameters,
-                    target=torch.stack(
-                        (gt_pixel_weight[i], pseudo_weight[i])))
+                    target=torch.stack((gt_pixel_weight[i], pseudo_weight[i])))
             del gt_pixel_weight
             mixed_img = torch.cat(mixed_img)
             mixed_lbl = torch.cat(mixed_lbl)
@@ -892,7 +941,7 @@ class DACS(UDADecorator):
                 mixed_lbl = mixed_lbl.unsqueeze(1)
 
             if do_mix:
-                # Train on mixed images, or target-only images when mixing is disabled.
+                # Train on mixed images, or target images with mixing disabled.
                 mix_losses = self.get_model().forward_train(
                     mixed_img,
                     img_metas,
@@ -904,7 +953,7 @@ class DACS(UDADecorator):
                 mix_losses = add_prefix(mix_losses, 'mix')
                 mix_loss, mix_log_vars = self._parse_losses(mix_losses)
                 log_vars.update(mix_log_vars)
-                mix_loss.backward()
+                self._backward(mix_loss)
 
         # Masked Training
         if self.enable_masking and self.mask_mode.startswith('separate'):
@@ -916,7 +965,7 @@ class DACS(UDADecorator):
             masked_loss = add_prefix(masked_loss, 'masked')
             masked_loss, masked_log_vars = self._parse_losses(masked_loss)
             log_vars.update(masked_log_vars)
-            masked_loss.backward()
+            self._backward(masked_loss)
 
         if self.local_iter % self.debug_img_interval == 0 and \
                 not self.source_only:

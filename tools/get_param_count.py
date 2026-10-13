@@ -1,14 +1,20 @@
 # Obtained from: https://github.com/open-mmlab/mmsegmentation/tree/v0.16.0
 
 import argparse
-import json
-import logging
-from copy import deepcopy
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+# isort:skip_file
+
+from mmengine.config import Config
 
 from experiments import generate_experiment_cfgs
-from mmcv import Config, get_logger
-from prettytable import PrettyTable
-
+from mmseg.engine.config import student_config
 from mmseg.models import build_segmentor
 
 
@@ -16,48 +22,47 @@ def human_format(num):
     magnitude = 0
     while abs(num) >= 1000:
         magnitude += 1
-        num /= 1000.0
-    # add more suffixes if you need them
+        num /= 1000.
     return '%.2f%s' % (num, ['', 'K', 'M', 'G', 'T', 'P'][magnitude])
 
 
 def count_parameters(model):
-    table = PrettyTable(['Modules', 'Parameters'])
-    total_params = 0
-    for name, parameter in model.named_parameters():
-        if not parameter.requires_grad:
-            continue
-        param = parameter.numel()
-        table.add_row([name, human_format(param)])
-        total_params += param
-    # print(table)
-    print(f'Total Trainable Params: {human_format(total_params)}')
-    return total_params
+    count = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f'Total Trainable Params: {human_format(count)}')
+    return count
 
 
-# Run: python -m tools.param_count
+def main(argv=None):
+    parser = argparse.ArgumentParser(description='Count student parameters')
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('--config')
+    group.add_argument('--exp', type=int, default=None)
+    args = parser.parse_args(argv)
+    with tempfile.TemporaryDirectory(prefix='epa-params-') as temporary:
+        if args.config:
+            configs = [Config.fromfile(args.config)]
+        else:
+            configs = []
+            for i, spec in enumerate(
+                    generate_experiment_cfgs(args.exp or 100)):
+                spec['_base_'] = [
+                    str(ROOT / 'configs' / base) for base in spec['_base_']
+                ]
+                filename = Path(temporary) / f'{i}.py'
+                Config(spec).dump(str(filename))
+                configs.append(Config.fromfile(str(filename)))
+        for cfg in configs:
+            model_cfg = student_config(cfg)
+            model_cfg['pretrained'] = None
+            model_cfg['train_cfg'] = None
+            model = build_segmentor(model_cfg)
+            print('Student:')
+            count_parameters(model)
+            print('Encoder:')
+            count_parameters(model.backbone)
+            print('Decoder:')
+            count_parameters(model.decode_head)
+
+
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        '--exp',
-        nargs='?',
-        type=int,
-        default=100,
-        help='Experiment id as defined in experiment.py',
-    )
-    args = parser.parse_args()
-    get_logger('mmseg', log_level=logging.ERROR)
-    cfgs = generate_experiment_cfgs(args.exp)
-    for cfg in cfgs:
-        with open('configs/tmp_param.json', 'w') as f:
-            json.dump(cfg, f)
-        cfg = Config.fromfile('configs/tmp_param.json')
-
-        model = build_segmentor(deepcopy(cfg['model']))
-        # model.init_weights()
-        print(f'Model {cfg["name_encoder"]}+{cfg["name_decoder"]}:')
-        count_parameters(model)
-        print(f'Encoder {cfg["name_encoder"]}:')
-        count_parameters(model.backbone)
-        print(f'Decoder {cfg["name_decoder"]}:')
-        count_parameters(model.decode_head)
+    main()

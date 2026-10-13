@@ -8,10 +8,9 @@
 import json
 import os.path as osp
 
-import mmcv
 import numpy as np
 import torch
-from mmcv.parallel import DataContainer as DC
+from mmengine.logging import print_log
 
 from . import CityscapesDataset
 from .builder import DATASETS
@@ -59,7 +58,28 @@ def get_crop_bbox(img_size, crop_size):
 @DATASETS.register_module()
 class UDADataset(object):
 
-    def __init__(self, source, target, cfg):
+    def __init__(self,
+                 source,
+                 target,
+                 cfg=None,
+                 sync_crop_size=None,
+                 rare_class_sampling=None):
+        if cfg is None:
+            cfg = dict(
+                source=source,
+                target=target,
+                sync_crop_size=sync_crop_size,
+                rare_class_sampling=rare_class_sampling)
+        if isinstance(source, dict) or isinstance(target, dict):
+            from .builder import build_dataset
+            if isinstance(source, dict):
+                source = build_dataset(source)
+            if isinstance(target, dict):
+                target = build_dataset(target)
+        self.resume_sampling_cfg = {
+            key: cfg.get(key)
+            for key in ('sync_crop_size', 'rare_class_sampling')
+        }
         self.source = source
         self.target = target
         self.ignore_index = target.ignore_index
@@ -79,8 +99,8 @@ class UDADataset(object):
 
             self.rcs_classes, self.rcs_classprob = get_rcs_class_probs(
                 cfg['source']['data_root'], self.rcs_class_temp)
-            mmcv.print_log(f'RCS Classes: {self.rcs_classes}', 'mmseg')
-            mmcv.print_log(f'RCS ClassProb: {self.rcs_classprob}', 'mmseg')
+            print_log(f'RCS Classes: {self.rcs_classes}', 'mmseg')
+            print_log(f'RCS ClassProb: {self.rcs_classprob}', 'mmseg')
 
             with open(
                     osp.join(cfg['source']['data_root'],
@@ -105,19 +125,21 @@ class UDADataset(object):
                     file = file.split('/')[-1]
                 self.file_to_idx[file] = i
 
+    @property
+    def metainfo(self):
+        return dict(classes=self.CLASSES, palette=self.PALETTE)
+
     def synchronized_crop(self, s1, s2):
         if self.sync_crop_size is None:
             return s1, s2
-        orig_crop_size = s1['img'].data.shape[1:]
+        orig_crop_size = s1['img'].shape[1:]
         crop_y1, crop_y2, crop_x1, crop_x2 = get_crop_bbox(
             orig_crop_size, self.sync_crop_size)
         for i, s in enumerate([s1, s2]):
             for key in ['img', 'gt_semantic_seg', 'valid_pseudo_mask']:
                 if key not in s:
                     continue
-                s[key] = DC(
-                    s[key].data[:, crop_y1:crop_y2, crop_x1:crop_x2],
-                    stack=s[key]._stack)
+                s[key] = s[key][:, crop_y1:crop_y2, crop_x1:crop_x2]
         return s1, s2
 
     def get_rare_class_sample(self):
@@ -127,8 +149,8 @@ class UDADataset(object):
         s1 = self.source[i1]
         if self.rcs_min_crop_ratio > 0:
             for j in range(10):
-                n_class = torch.sum(s1['gt_semantic_seg'].data == c)
-                # mmcv.print_log(f'{j}: {n_class}', 'mmseg')
+                n_class = torch.sum(s1['gt_semantic_seg'] == c)
+                # print_log(f'{j}: {n_class}', 'mmseg')
                 if n_class > self.rcs_min_pixels * self.rcs_min_crop_ratio:
                     break
                 # Sample a new random crop from source image i1.

@@ -5,6 +5,38 @@ Official Implementation for Equiangular Prototype Alignment for Unsupervised Dom
 **Authors**: Akash Sharma, Arunima Sarkar, Mohanasankar Sivaprakasam
 
 
+## MMCV 2 migration branch
+
+All migration edits and progress are confined to **`mmcv2`**; the legacy
+stack below remains the reference for the frozen baseline. The isolated
+Python 3.11/MMCV 2.1.0 setup is documented in
+[ENVIRONMENT_MMCV2.md](ENVIRONMENT_MMCV2.md). Original medical configs now
+translate to native MMEngine training and evaluation through the existing
+launchers; commands, supported scope and resume rules are in
+[MIGRATION_STEP7.md](MIGRATION_STEP7.md). The consolidated version,
+reproduction, evaluation and checkpoint guide is
+[MIGRATION_SUPPORT.md](MIGRATION_SUPPORT.md).
+
+Both EPA/FDA directions pass short real-data CLI checks. The matched runs
+stopped at 5,000 updates while retaining the 50,000-iteration schedule.
+Cross-stack numerical checks pass for these two configurations; results and
+scope are in [MIGRATION_STEP8.md](MIGRATION_STEP8.md). The replacement MR -> CT
+legacy reference corrected an asset-path/RNG issue in the isolated checkout;
+its 5,000-update final/best evaluations are complete.
+Both modern campaigns and all planned evaluations are complete. The user
+accepted the migration on 2026-10-13 for the tested single-GPU EPA/FDA scope.
+Acceptance uses independently selected best target checkpoints, permits
+improvements, excludes source/final evaluations, and treats lower ASSD as
+better. The measured MR -> CT best-target differences are accepted deviations.
+Decision, results and scope are in
+[MIGRATION_ACCEPTANCE.md](MIGRATION_ACCEPTANCE.md); class/ASSD details are in
+[MIGRATION_METRIC_REVIEW.md](MIGRATION_METRIC_REVIEW.md).
+Precision diagnosis and the authorized FP32-convolution candidate are in
+[MIGRATION_DIAGNOSIS.md](MIGRATION_DIAGNOSIS.md) and
+[MIGRATION_PRECISION_EXPERIMENT.md](MIGRATION_PRECISION_EXPERIMENT.md).
+Original campaign execution is preserved in
+[MIGRATION_STEP9.md](MIGRATION_STEP9.md). No further accuracy runs are required.
+
 ## Repository Layout
 
 ```text
@@ -32,7 +64,24 @@ location. The main experiment configs are in `configs/medical/`.
 
 ## Environment
 
-The copied MIC segmentation code targets the older MMSegmentation stack:
+On `mmcv2`, use the isolated `epa-mmcv2` environment: Python 3.11.17,
+PyTorch 2.1.0+cu118, torchvision 0.16.0+cu118, MMCV 2.1.0 and MMEngine
+0.10.7. Reproducible installation and CUDA qualification are in
+[ENVIRONMENT_MMCV2.md](ENVIRONMENT_MMCV2.md); dependencies are pinned in
+`requirements-mmcv2.txt` and `requirements-mmcv2.lock.txt`.
+
+```bash
+conda activate epa-mmcv2
+```
+
+The selected single-GPU CT -> MR and MR -> CT EPA/FDA configurations have
+passed numerical and smoke qualification. Matched accuracy runs are complete;
+the user accepted their best-target results. Other configurations/features require separate
+qualification; the config catalogue below also includes historical experiments.
+
+### Frozen legacy reference
+
+The preserved `epa` environment and isolated legacy source use:
 
 - Python 3.8.x
 - CUDA 11.0 compatible PyTorch
@@ -124,6 +173,12 @@ configs/medical/ct2mr/
 
 Run commands from the repository root.
 
+For the modern migration comparison, the sequential queue and exact
+commands are documented in [MIGRATION_STEP9.md](MIGRATION_STEP9.md).
+The original configs are translated to native MMEngine configs automatically.
+`--stop-after 5000` caps optimizer updates and retains the 50,000-step
+schedule. These launcher examples are part of the historical config catalogue.
+
 Example MR -> CT SegFormer run:
 
 ```bash
@@ -167,6 +222,11 @@ Evaluate a checkpoint with MMSeg's test entrypoint:
 python -m tools.test CONFIG CHECKPOINT --eval mDice
 ```
 
+In `epa-mmcv2`, add `--metrics-out PATH.json` to save unrounded medical
+Dice/ASSD results. Full native checkpoints and legacy student weights load
+strictly for evaluation. Source and target slice/volume protocols must match
+the intended configuration; the migration compares validation slices.
+
 Example:
 
 ```bash
@@ -177,6 +237,21 @@ python -m tools.test \
 ```
 
 For configs that evaluate multiple domains, the validation results are reported with domain prefixes such as `source.mDice` and `target.mDice`.
+
+## Native training resume
+
+Use a full native iteration checkpoint with the same experiment settings:
+
+```bash
+python tools/train.py CONFIG --work-dir WORK_DIR --resume-from ITER_CHECKPOINT
+```
+
+Native checkpoints restore optimizer, scheduler, teacher/UDA counters,
+RNG and data-stream state. Under the matched nondeterministic CUDA policy,
+floating continuation can differ. Legacy and best weights checkpoints are
+for evaluation or `--load-from` initialization; they cannot resume native
+training. The fresh accuracy runs use neither resume nor load overrides.
+See [MIGRATION_STEP7.md](MIGRATION_STEP7.md) for supported CLI details.
 
 ## Notes
 
