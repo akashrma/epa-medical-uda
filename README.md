@@ -1,10 +1,19 @@
 # Equiangular Prototype Alignment for Unsupervised Domain-Adaptive Medical Image Segmentation
 
 Official implementation of **Equiangular Prototype Alignment for Unsupervised
-Domain-Adaptive Medical Image Segmentation**, accepted at ICIP 2026
-([paper](https://ieeexplore.ieee.org/document/11630366/)).
+Domain-Adaptive Medical Image Segmentation**, accepted at **ICIP 2026**.
 
 **Authors:** Akash Sharma, Arunima Sarkar, Mohanasankar Sivaprakasam
+
+[Paper](https://ieeexplore.ieee.org/document/11630366/) ·
+[Weights & dataset](https://drive.google.com/drive/folders/1BcGtDlH80o15i-A_VTL-P6UPHNJnaI5D?usp=sharing) ·
+[Paper source](https://github.com/akashrma/epa-camera-ready)
+
+![EPA framework: Fourier domain augmentation styles source images like the target domain, an EMA teacher supplies pseudo-labels, and source and target class representations align to fixed simplex ETF prototypes.](resources/epa-framework.png)
+
+**EPA overview.** Fourier domain augmentation aligns image appearance,
+mean-teacher self-training provides target supervision, and equiangular
+prototype alignment maps class representations to fixed simplex ETF anchors.
 
 Train EPA for CT → MR and MR → CT segmentation using the local SegFormer/MiT-B5
 implementation, fixed ETF prototypes, FDA and self-training. The current code
@@ -14,6 +23,12 @@ experiment configs are translated to MMEngine by the training entrypoint.
 This README covers installation, data preparation, reproducing the paper
 results with the released EPA weights, new training runs and resume.
 Upstream attribution and licensing are in [LICENSES.md](LICENSES.md).
+
+[Setup](#1-install-the-environment) ·
+[Data](#2-prepare-data-and-initialization-weights) ·
+[Paper results](#3-reproduce-the-paper-results) ·
+[Training](#4-start-a-new-training-run) ·
+[Resume](#5-resume-or-initialize-from-a-checkpoint)
 
 ## 1. Install the environment
 
