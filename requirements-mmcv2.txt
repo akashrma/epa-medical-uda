@@ -1,4 +1,4 @@
-# Qualified modern stack for Python 3.11.17; see ENVIRONMENT.md.
+# Qualified modern stack for Python 3.11.17; see README.md.
 # requirements.txt records the historical legacy environment.
 --extra-index-url https://download.pytorch.org/whl/cu118
 --find-links https://download.openmmlab.com/mmcv/dist/cu118/torch2.1.0/index.html

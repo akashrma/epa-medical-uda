@@ -10,10 +10,9 @@ implementation, fixed ETF prototypes, FDA and self-training. The current code
 runs on **Python 3.11, PyTorch 2.1, MMCV 2.1 and MMEngine**. Existing medical
 experiment configs are translated to MMEngine by the training entrypoint.
 
-This guide covers installation, the exact data layout, reproducing the
-5,000-update comparison and starting new training runs. Further details:
-[environment](ENVIRONMENT.md), [training and resume](TRAINING.md),
-[results and validation scope](TRAINING_RESULTS.md), [licenses](LICENSES.md).
+This README covers installation, the exact data layout, reproducing the
+5,000-update comparison, evaluation, new training runs and resume.
+Upstream attribution and licensing are in [LICENSES.md](LICENSES.md).
 
 ## 1. Install the environment
 
@@ -21,6 +20,17 @@ The tested platform is Linux with one NVIDIA GPU (RTX 4080 Laptop GPU,
 about 12 GiB VRAM), Python 3.11.17, PyTorch 2.1.0+cu118, torchvision
 0.16.0+cu118, MMCV 2.1.0 and MMEngine 0.10.7. A compatible NVIDIA driver is
 required. Other platforms, GPUs and dependency versions are not qualified.
+
+| Component | Qualified version |
+| --- | --- |
+| Python | 3.11.17 |
+| PyTorch / torchvision | 2.1.0+cu118 / 0.16.0+cu118 |
+| CUDA runtime / cuDNN | 11.8 / 8.7.0 |
+| MMCV / MMEngine | 2.1.0 / 0.10.7 |
+| NumPy / SciPy | 1.26.4 / 1.11.4 |
+| timm / Kornia | 0.4.12 / 0.5.8 |
+| MedPy / SimpleITK | 0.5.2 / 2.3.1 |
+| OpenCV | 4.8.1.78 |
 
 ```bash
 git clone https://github.com/akashrma/epa-medical-uda.git
@@ -38,17 +48,33 @@ from this repository root so Python uses the local `mmseg` package. Keep
 `mmcv-full`, `mmcv-lite` and upstream `mmsegmentation` out of this environment.
 `requirements-mmcv2.txt` lists direct dependencies; `requirements.txt` records
 the historical Python 3.8/MMCV 1 environment.
+The runtime enforces the exact MMCV and MMEngine versions. The lock pins
+all 78 Python distributions, including packaging tools; it does not pin the
+host driver or conda base packages.
 
-Check CUDA and a compiled operation before training:
+Check local package resolution, CUDA forward/backward and a compiled
+operation before training. This needs no dataset or model weights:
 
 ```bash
 python - <<'PY'
+from pathlib import Path
+
+import mmcv
+import mmengine
 import torch
 from mmcv.ops import nms
 
 import mmseg
 
+assert mmcv.__version__ == '2.1.0'
+assert mmengine.__version__ == '0.10.7'
+assert torch.__version__ == '2.1.0+cu118'
+assert Path(mmseg.__file__).resolve() == Path('mmseg/__init__.py').resolve()
 assert torch.cuda.is_available(), 'A visible NVIDIA GPU is required'
+x = torch.randn(1, 3, 16, 16, device='cuda', requires_grad=True)
+conv = torch.nn.Conv2d(3, 4, 3).cuda()
+conv(x).square().mean().backward()
+assert torch.isfinite(x.grad).all()
 boxes = torch.tensor([[0., 0., 10., 10.]], device='cuda')
 _, keep = nms(boxes, torch.tensor([.9], device='cuda'), .5)
 assert keep.tolist() == [0]
@@ -56,8 +82,6 @@ print('Local package:', mmseg.__file__)
 print('GPU:', torch.cuda.get_device_name(0))
 PY
 ```
-
-[ENVIRONMENT.md](ENVIRONMENT.md) includes a forward/backward CUDA check.
 
 ## 2. Prepare data and initialization weights
 
@@ -190,6 +214,11 @@ Each run saves:
 - `iter_5000.pth`: full state at the stop cap, usable for native resume.
 - `early_stop.json`: update counters and configured horizon.
 
+The default periodic full-checkpoint interval is 50,000 updates. A full
+checkpoint is also saved at the requested stop cap. Use
+`python tools/train.py --help` for all options. Native MMEngine configs can
+also be supplied directly to the entrypoint.
+
 ### Evaluate the best checkpoint
 
 Use the same config as training. Set `CT_CHECKPOINT` and `MR_CHECKPOINT` to
@@ -210,25 +239,58 @@ CT → MR evaluates `val_mr` (2,400 slices); MR → CT evaluates `val_ct`
 console Dice is shown as a percentage. Background is excluded from the mean.
 ASSD follows the original equally weighted directional means and empty-mask
 rules, rather than the installed MedPy pooled-distance default.
+The slice evaluator uses an ASSD fallback of 1.0 when the surface-distance
+calculation fails, including empty masks. Historical NPZ volume evaluation
+also retains both-empty Dice=0. Preserve these definitions for comparison.
+
+Add `--out FILE.pkl` to retain predictions. For diagnostic source evaluation,
+override `data.test.img_list` and `data.test.ann_list` with the source list
+pair. For CT → MR, for example:
+
+```bash
+python tools/test.py configs/medical/ct2mr_selftrain_nomix_etf_tgt_dicece_segformer_mitb5_fda.py \
+  "$CT_CHECKPOINT" --eval mDice --metrics-out work_dirs/ct2mr_epa_fda_seed0_5k/best_source_metrics.json \
+  --cfg-options data.test.img_list=data/datalist/val_ct.txt data.test.ann_list=data/datalist/val_ct_gt.txt
+```
+
+For MR → CT source evaluation, use the MR validation pair. Native configs
+use `test_dataloader.dataset.img_list` and `.ann_list` instead. Evaluation
+uses batch size 1 and four workers. Test-time augmentation, slide inference,
+FP16 and NPZ volumes use a different protocol from the recorded slice results.
 
 ### Recorded migration results
 
-| Direction | Legacy best mDice | Modern best mDice | Legacy mASSD | Modern mASSD |
-| --- | --- | --- | --- | --- |
-| CT → MR | 68.57% | 73.07% | 2.2916 | 2.1832 |
-| MR → CT | 84.32% | 83.11% | 1.4677 | 1.5168 |
+Each stack independently selects its best target checkpoint; source and
+final-checkpoint evaluations do not determine acceptance. Dice below is
+reported on the 0–1 scale.
 
-Higher Dice and lower ASSD are better. CT → MR improves; MR → CT's measured
-1.215-point Dice decrease and 3.34% ASSD increase were accepted in the
-migration review. These are 5,000-update, best-target results, not a claim
-that every direction or class improves or that the paper's full training
-protocol has been rerun.
+| Direction | Legacy best iteration | Modern best iteration | Legacy mDice | Modern mDice | Legacy mASSD | Modern mASSD |
+| --- | --- | --- | --- | --- | --- | --- |
+| CT → MR | 5,000 | 3,500 | 0.6857276685 | 0.7307150253 | 2.2916152708 | 2.1831863543 |
+| MR → CT | 4,000 | 3,000 | 0.8432316865 | 0.8310812836 | 1.4677211894 | 1.5168075542 |
+
+Higher Dice and lower ASSD are better. CT → MR mean Dice improves by
+4.499 percentage points and mean ASSD by 4.73%; its AA ASSD increases by
+0.29552 pixel. MR → CT mean Dice decreases by 1.215 points, AA Dice by
+3.965 points, and mean ASSD increases by 3.34%. The migration review accepted
+these measured differences on 2026-10-13. Earlier automatic Dice gates
+failed; acceptance records the review decision rather than a claim that
+those gates passed. These are 5,000-update, best-target results; the paper's
+full training protocol has not been rerun.
 
 Execution is nondeterministic, so exact scores and best iterations can vary.
-The recorded campaign predates the cleanup's tiny DropPath rounding change;
-see [TRAINING_RESULTS.md](TRAINING_RESULTS.md) for exact metrics, provenance
-and scope. The initial cleanup has smoke/numerical validation, not a new
-5,000-update accuracy campaign.
+The recorded campaign predates the cleanup's tiny DropPath rounding change
+to ordinary FP32 `torch.linspace`. The cleanup checks include config
+equivalence, exact CPU FDA outputs/gradients, pretrained initialization,
+strict best-checkpoint loading and one source-training update per direction.
+It does not include a new 5,000-update accuracy campaign. FDA keeps its real
+inverse `irfft2`; replacing it with `ifft2(...).real` changes the inputs.
+
+Historical code and full reports are preserved at Git commit `a05cff5`.
+Local ignored evidence remains under `work_dirs/migration_baseline/` and
+`work_dirs/mmcv2/fp32_conv_seed0_5k/`; `comparison_contract_v5.json` in the
+former and `accuracy_review_v5.json` in the latter record the accepted policy
+and results. These local evidence directories are not part of a Git clone.
 
 ## 4. Start a new training run
 
@@ -293,9 +355,20 @@ directory. Native resume restores optimizer/scheduler, teacher/prototypes,
 UDA counters, RNG and data-stream state. Floating continuation can differ
 under nondeterministic CUDA execution.
 
-Legacy checkpoints and native best weights support evaluation and
-`--load-from CHECKPOINT` initialization. They cannot resume native optimizer
-state. `--load-from` starts a fresh run; it is different from `--resume-from`.
+| Checkpoint | Evaluation / `--load-from` | Full native resume |
+| --- | --- | --- |
+| Legacy, matching student architecture | Strict student load | Unsupported |
+| Native best weights | Strict student load | Unsupported: optimizer/scheduler absent |
+| Native full iteration checkpoint | Strict student load | Supported with matching runtime/data contract |
+
+Loading strips an anchored `module.` prefix and selects `model.` student
+keys from UDA checkpoints; every student key and tensor shape must match.
+`--load-from CHECKPOINT` starts fresh optimization, UDA and sampling state.
+GPU count, horizon, precision and data/sampling settings must match for
+resume. CPU and deterministic CUDA continuation passed exact qualification
+checks; the supported nondeterministic CUDA policy can change floating
+continuation. A shorter diagnostic stop can save a full resume checkpoint
+without changing the schedule horizon.
 
 ## Repository layout
 
