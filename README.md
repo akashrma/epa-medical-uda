@@ -6,8 +6,7 @@ Domain-Adaptive Medical Image Segmentation**, accepted at **ICIP 2026**.
 **Authors:** Akash Sharma, Arunima Sarkar, Mohanasankar Sivaprakasam
 
 [Paper](https://ieeexplore.ieee.org/document/11630366/) ·
-[Weights & dataset](https://drive.google.com/drive/folders/1BcGtDlH80o15i-A_VTL-P6UPHNJnaI5D?usp=sharing) ·
-[Paper source](https://github.com/akashrma/epa-camera-ready)
+[Weights & dataset](https://drive.google.com/drive/folders/1BcGtDlH80o15i-A_VTL-P6UPHNJnaI5D?usp=sharing)
 
 ![EPA framework: Fourier domain augmentation styles source images like the target domain, an EMA teacher supplies pseudo-labels, and source and target class representations align to fixed simplex ETF prototypes.](resources/epa-framework.png)
 
