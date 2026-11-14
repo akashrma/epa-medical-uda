@@ -1,0 +1,3 @@
+c5cf7f78bb2a9a513fde9294dfb2402b838038580232a870e8966fd0fd53980c  pretrained/CT2MR_best_mDice.pth
+f89a8ace5692d798e3f7a2039fbddeea795aa69d7d341f6e7a3570e23ad06152  pretrained/MR2CT_best_mDice.pth
+5c86dc4fbab18c50cbf0fef57769e01ba27e408eeb742c80ce151a0e83d45832  data/datalist/test_ct.txt

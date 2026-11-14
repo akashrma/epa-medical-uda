@@ -1,7 +1,8 @@
 # Equiangular Prototype Alignment for Unsupervised Domain-Adaptive Medical Image Segmentation
 
 Official implementation of **Equiangular Prototype Alignment for Unsupervised
-Domain-Adaptive Medical Image Segmentation**, accepted at ICIP 2026.
+Domain-Adaptive Medical Image Segmentation**, accepted at ICIP 2026
+([paper](https://ieeexplore.ieee.org/document/11630366/)).
 
 **Authors:** Akash Sharma, Arunima Sarkar, Mohanasankar Sivaprakasam
 
@@ -10,8 +11,8 @@ implementation, fixed ETF prototypes, FDA and self-training. The current code
 runs on **Python 3.11, PyTorch 2.1, MMCV 2.1 and MMEngine**. Existing medical
 experiment configs are translated to MMEngine by the training entrypoint.
 
-This README covers installation, the exact data layout, reproducing the
-reference runs, evaluation, new training runs and resume.
+This README covers installation, data preparation, reproducing the paper
+results with the released EPA weights, new training runs and resume.
 Upstream attribution and licensing are in [LICENSES.md](LICENSES.md).
 
 ## 1. Install the environment
@@ -87,9 +88,10 @@ PY
 
 Download the prepared dataset and pretrained models from the
 [project download folder](https://drive.google.com/drive/folders/1BcGtDlH80o15i-A_VTL-P6UPHNJnaI5D?usp=sharing).
-Extract the prepared slice arrays and place the MiT-B5 initialization at
-`pretrained/mit_b5_mmseg.pth`. Dataset arrays and large model checkpoints
-are downloaded separately from the Git repository.
+Extract the prepared data and place the three downloaded weights under
+`pretrained/`: `mit_b5_mmseg.pth` for training initialization, and
+`CT2MR_best_mDice.pth` / `MR2CT_best_mDice.pth` for the paper results.
+Dataset arrays and large checkpoints are downloaded separately from Git.
 
 ```text
 epa-medical-uda/
@@ -102,10 +104,14 @@ epa-medical-uda/
 │   │   ├── val_ct/         # ct_val_slice0.npy, ...
 │   │   ├── gt_val_ct/      # ct_val_slice0_gt.npy, ...
 │   │   ├── val_mr/         # mr_val_slice0.npy, ...
-│   │   └── gt_val_mr/      # mr_val_slice0_gt.npy, ...
+│   │   ├── gt_val_mr/      # mr_val_slice0_gt.npy, ...
+│   │   ├── test_ct/        # supplied CT .nii.gz.npz volumes
+│   │   └── test_mr/        # supplied MR .nii.gz.npz volumes
 │   └── datalist/          # generated below
 ├── pretrained/
-│   └── mit_b5_mmseg.pth
+│   ├── mit_b5_mmseg.pth
+│   ├── CT2MR_best_mDice.pth
+│   └── MR2CT_best_mDice.pth
 └── etf_prototypes/
     ├── etf_prototypes_K5_D768.pt
     ├── etf_prototypes_K5_D768.npy
@@ -132,16 +138,18 @@ existing BGR normalization. Masks contain integer class IDs:
 Use the supplied preprocessing and splits to compare results. This repository
 does not provide a raw NIfTI-to-training-slice preprocessing recipe.
 
-### Generate the exact ordered datalists
+### Generate the ordered datalists
 
 ```bash
-python tools/prepare_medical_datalists.py
-python tools/prepare_medical_datalists.py --check
+python tools/prepare_medical_datalists.py --include-test
+python tools/prepare_medical_datalists.py --include-test --check
 ```
 
-The generator checks that every required array exists and writes eight lists
-under `data/datalist/`. It preserves existing matching lists and refuses to
-overwrite different lists. Paths are relative to each list file, for example:
+The generator checks that every required array exists and writes eight
+train/validation lists plus `test_ct.txt` and `test_mr.txt` under
+`data/datalist/`. Omit `--include-test` if only preparing training slices.
+The generator preserves existing matching lists and refuses to overwrite
+different lists. Paths are relative to each list file, for example:
 
 ```text
 # train_ct.txt (one path per line; omit this comment in the actual list)
@@ -160,8 +168,8 @@ recorded splits are:
 The selected pipelines load target training masks, but `UDADataset` passes
 only target images/metadata to UDA; target ground truth is not used by the
 training loss. The supplied mask lists are still required by these configs.
-Volume `.npz` test sets and source-only configs use a separate
-protocol from this validation-slice comparison.
+The paper checkpoint protocols use MR validation slices for CT → MR and
+CT test volumes for MR → CT, as described below.
 
 Check the initialization assets and generated lists against the recorded
 SHA-256 hashes:
@@ -172,122 +180,113 @@ sha256sum -c resources/reproduction_assets.sha256
 
 The expected list hashes assume the default layout shown above.
 
-## 3. Reproduce reference runs
+## 3. Reproduce the paper results
 
-These two configs use batch size 4, four workers, 256×256 crops, EPA/ETF,
-FDA L=0.01 and seed 0. Training uses FP32, convolution TF32 disabled, matmul
-TF32 enabled and cuDNN benchmark enabled. Run the directions sequentially
-on one GPU, using fresh work directories.
-
-Resolve the first config without building a model or starting GPU work:
+Use the released EPA weights from the project download folder. Verify the
+checkpoint files and CT test list before evaluation:
 
 ```bash
-python tools/train.py configs/medical/ct2mr_selftrain_nomix_etf_tgt_dicece_segformer_mitb5_fda.py \
-  --work-dir work_dirs/ct2mr_config_check --seed 0 --stop-after 5000 --dry-run
+sha256sum -c resources/paper_checkpoints.sha256
 ```
 
-Train CT → MR:
+### Reference results from the paper
+
+| Direction | Released checkpoint | Evaluation data | Mean Dice (%) |
+| --- | --- | --- | --- |
+| CT → MR | `CT2MR_best_mDice.pth` | MR validation slices | 71.2 |
+| MR → CT | `MR2CT_best_mDice.pth` | CT test volumes | 85.2 |
+
+Mean Dice averages the four foreground structures (Myo, LAC, LVC, AA),
+excluding background. The table uses the paper's rounding; metric JSON files
+retain the unrounded 0–1 scores. Use the supplied weights and the exact
+protocol below to reproduce these numbers. Fresh training runs can produce
+different checkpoints and scores.
+
+### CT → MR: MR validation slices
+
+```bash
+python tools/test.py configs/medical/ct2mr_epa_segformer_mitb5_eval.py \
+  pretrained/CT2MR_best_mDice.pth --eval mDice \
+  --metrics-out work_dirs/paper_evaluation/ct2mr_metrics.json
+```
+
+This evaluates all 2,400 images/masks from `val_mr.txt` / `val_mr_gt.txt`
+using the configured NumPy slice preprocessing. Dice is aggregated across
+validation slices before averaging the foreground classes.
+
+### MR → CT: CT test volumes
+
+```bash
+python tools/test.py configs/medical/mr2ct_epa_segformer_mitb5_eval.py \
+  pretrained/MR2CT_best_mDice.pth --eval mDice \
+  --metrics-out work_dirs/paper_evaluation/mr2ct_metrics.json
+```
+
+This uses `test_ct.txt` with the four supplied volumes:
+`image_ct_1003.nii.gz.npz`, `image_ct_1008.nii.gz.npz`,
+`image_ct_1014.nii.gz.npz` and `image_ct_1019.nii.gz.npz`.
+Each contains `arr_0` (image) and `arr_1` (mask). Inference slices along
+axis 2, applies CT normalization and flips axes 0 and 1, then reconstructs
+each volume. Dice is computed per volume and class, then averaged across
+volumes and the four foreground classes. The evaluation config preserves
+this complete protocol, including orientation and normalization.
+
+The ordinary MR → CT training config evaluates CT validation slices. Use
+`mr2ct_epa_segformer_mitb5_eval.py` with the released checkpoint for the
+paper's volume-level result.
+
+### Evaluation options
+
+Both commands use whole-image FP32 inference, batch size 1 and four workers.
+Keep the supplied data, preprocessing, orientation and checkpoint unchanged.
+Do not enable augmentation or slide inference for the reported results.
+Add `--out FILE.pkl` to retain predictions.
+
+The slice evaluator also reports ASSD. For volume ASSD, use
+`--eval mDice mASSD`. ASSD averages the two directional surface-distance
+means with equal weight and uses the existing 1.0 fallback for empty/invalid
+masks. Volume Dice uses zero when both masks are empty.
+
+For a newly trained checkpoint, evaluate validation slices with the same
+training config, for example:
+
+```bash
+python tools/test.py CONFIG CHECKPOINT --eval mDice --metrics-out METRICS.json
+```
+
+## 4. Start a new training run
+
+The EPA/FDA training configs use batch size 4, four workers, 256×256 crops,
+FDA L=0.01 and a 50,000-update LR/UDA horizon. Training uses FP32, convolution
+TF32 disabled, matmul TF32 enabled and cuDNN benchmark enabled.
+
+Train CT → MR from the MiT-B5 initialization:
 
 ```bash
 python tools/train.py configs/medical/ct2mr_selftrain_nomix_etf_tgt_dicece_segformer_mitb5_fda.py \
-  --work-dir work_dirs/ct2mr_epa_fda_seed0_5k --seed 0 --stop-after 5000
+  --work-dir work_dirs/ct2mr_epa_fda_seed0 --seed 0
 ```
 
 Train MR → CT:
 
 ```bash
 python tools/train.py configs/medical/mr2ct_selftrain_nomix_etf_tgt_dicece_segformer_mitb5_fda.py \
-  --work-dir work_dirs/mr2ct_epa_fda_seed0_5k --seed 0 --stop-after 5000
+  --work-dir work_dirs/mr2ct_epa_fda_seed0 --seed 0
 ```
 
-**Training defaults to the configured 50,000 updates.** For the reference
-runs above, `--stop-after 5000` stops early while retaining the 50,000-step
-LR/UDA horizon. Validation runs every 500 updates and selects the strictly highest target
-foreground mDice. The commands above start fresh optimization from the
-MiT-B5 initialization; omit resume/load overrides for these reference runs.
-
-Each run saves:
-
-- `experiment_spec.py`, `native_config.py` and `launch_manifest.json`.
-- Source archive, logs and TensorBoard output.
-- `best_target_mDice_iter_N.pth`: student weights selected by target mDice.
-- `iter_5000.pth`: full state at the stop cap, usable for native resume.
-- `early_stop.json`: update counters and configured horizon.
-
-The default periodic full-checkpoint interval is 50,000 updates. A full
-checkpoint is also saved at the requested stop cap. Use
-`python tools/train.py --help` for all options. Native MMEngine configs can
-also be supplied directly to the entrypoint.
-
-### Evaluate the best checkpoint
-
-Use the same config as training. Set `CT_CHECKPOINT` and `MR_CHECKPOINT` to
-the best files produced by your runs; the selected iteration can vary.
-
-```bash
-CT_CHECKPOINT=work_dirs/ct2mr_epa_fda_seed0_5k/best_target_mDice_iter_3500.pth
-MR_CHECKPOINT=work_dirs/mr2ct_epa_fda_seed0_5k/best_target_mDice_iter_3000.pth
-
-python tools/test.py configs/medical/ct2mr_selftrain_nomix_etf_tgt_dicece_segformer_mitb5_fda.py \
-  "$CT_CHECKPOINT" --eval mDice --metrics-out work_dirs/ct2mr_epa_fda_seed0_5k/best_target_metrics.json
-python tools/test.py configs/medical/mr2ct_selftrain_nomix_etf_tgt_dicece_segformer_mitb5_fda.py \
-  "$MR_CHECKPOINT" --eval mDice --metrics-out work_dirs/mr2ct_epa_fda_seed0_5k/best_target_metrics.json
-```
-
-CT → MR evaluates `val_mr` (2,400 slices); MR → CT evaluates `val_ct`
-(1,200 slices). The JSON reports raw 0–1 foreground/per-class Dice and ASSD;
-console Dice is shown as a percentage. Background is excluded from the mean.
-ASSD follows the original equally weighted directional means and empty-mask
-rules, rather than the installed MedPy pooled-distance default.
-The slice evaluator uses an ASSD fallback of 1.0 when the surface-distance
-calculation fails, including empty masks. NPZ volume evaluation
-also retains both-empty Dice=0. Preserve these definitions for comparison.
-
-Add `--out FILE.pkl` to retain predictions. For diagnostic source evaluation,
-override `data.test.img_list` and `data.test.ann_list` with the source list
-pair. For CT → MR, for example:
-
-```bash
-python tools/test.py configs/medical/ct2mr_selftrain_nomix_etf_tgt_dicece_segformer_mitb5_fda.py \
-  "$CT_CHECKPOINT" --eval mDice --metrics-out work_dirs/ct2mr_epa_fda_seed0_5k/best_source_metrics.json \
-  --cfg-options data.test.img_list=data/datalist/val_ct.txt data.test.ann_list=data/datalist/val_ct_gt.txt
-```
-
-For MR → CT source evaluation, use the MR validation pair. Native configs
-use `test_dataloader.dataset.img_list` and `.ann_list` instead. Evaluation
-uses batch size 1 and four workers. Test-time augmentation, slide inference,
-FP16 and NPZ volumes use a different protocol from the recorded slice results.
-
-### Reference results
-
-The runs below use seed 0, 5,000 optimizer updates, the configured
-50,000-step schedule and the validation splits listed above. The best
-checkpoint is selected by target foreground mDice over validation every
-500 updates. Dice is reported on the 0–1 scale.
-
-| Direction | Best update | Target mDice | Target mASSD |
-| --- | --- | --- | --- |
-| CT → MR | 3,500 | 0.7307150253 | 2.1831863543 |
-| MR → CT | 3,000 | 0.8310812836 | 1.5168075542 |
-
-Higher Dice and lower ASSD are better. These are short-run reference
-measurements; full 50,000-update results are not reported here. CUDA
-execution is nondeterministic, so scores and selected iterations can vary.
-Preserve the data, fixed prototypes, precision settings and LR horizon when
-comparing a new run with these values.
-
-## 4. Start a new training run
-
-For a new seed and the full configured 50,000 updates:
-
-```bash
-python tools/train.py configs/medical/ct2mr_selftrain_nomix_etf_tgt_dicece_segformer_mitb5_fda.py \
-  --work-dir work_dirs/ct2mr_epa_fda_seed1_50k --seed 1
-```
+Run the directions sequentially on one GPU with fresh work directories.
+Change `--seed` and the work directory for a new seeded experiment. Add
+`--dry-run` to inspect resolved settings without building a model or using
+the GPU.
 
 Training uses `runner.max_iters` by default. Set `--stop-after N` for a
 shorter run; `N` must be positive and no larger than `runner.max_iters`.
-The stop cap never changes the LR/UDA schedule horizon.
+The stop cap never changes the LR/UDA schedule horizon. Validation runs
+every 500 updates and selects the strictly highest target foreground mDice.
+Runs save `experiment_spec.py`, `native_config.py`, `launch_manifest.json`,
+a source archive, logs, TensorBoard output, best weights and full iteration
+checkpoints. The default periodic full-checkpoint interval is 50,000, and a
+full checkpoint is also saved at an explicit stop cap.
 
 Use a child config for a new experiment, preserving the original reference:
 
@@ -331,8 +330,10 @@ config, seed, horizon, precision and data/sampling settings:
 
 ```bash
 python tools/train.py configs/medical/ct2mr_selftrain_nomix_etf_tgt_dicece_segformer_mitb5_fda.py \
-  --work-dir work_dirs/ct2mr_epa_fda_seed0_5k \
-  --resume-from work_dirs/ct2mr_epa_fda_seed0_5k/iter_5000.pth --seed 0 --stop-after 50000
+  --work-dir work_dirs/ct2mr_partial --seed 0 --stop-after 1000
+python tools/train.py configs/medical/ct2mr_selftrain_nomix_etf_tgt_dicece_segformer_mitb5_fda.py \
+  --work-dir work_dirs/ct2mr_partial --seed 0 \
+  --resume-from work_dirs/ct2mr_partial/iter_1000.pth
 ```
 
 `--resume` without a path discovers the last full checkpoint in the work
@@ -342,7 +343,7 @@ under nondeterministic CUDA execution.
 
 | Checkpoint | Evaluation / `--load-from` | Full native resume |
 | --- | --- | --- |
-| Student weights, matching architecture | Strict student load | Unsupported |
+| Released paper weights, matching architecture | Strict student load | Unsupported |
 | Native best weights | Strict student load | Unsupported: optimizer/scheduler absent |
 | Native full iteration checkpoint | Strict student load | Supported with matching runtime/data contract |
 

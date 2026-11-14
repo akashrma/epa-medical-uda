@@ -1,11 +1,11 @@
-"""Create the ordered slice lists used by the two medical EPA/FDA configs."""
+"""Create the ordered slice and optional test-volume lists for EPA."""
 
 import argparse
 import os
 from pathlib import Path
 
 
-def prepare_datalists(data_root, output_dir, check=False):
+def prepare_datalists(data_root, output_dir, check=False, include_test=False):
     data_root = Path(data_root).resolve()
     output_dir = Path(output_dir).resolve()
     counts = {
@@ -29,9 +29,24 @@ def prepare_datalists(data_root, output_dir, check=False):
             filename = output_dir / f'{split}_{modality}{suffix}.txt'
             contents[filename] = ''.join(
                 os.path.relpath(path, output_dir) + '\n' for path in paths)
+    test_count = 0
+    if include_test:
+        test_ids = {
+            'ct': (1003, 1008, 1014, 1019),
+            'mr': (1007, 1009, 1018, 1019)
+        }
+        for modality, ids in test_ids.items():
+            paths = [
+                data_root / f'test_{modality}' /
+                f'image_{modality}_{case}.nii.gz.npz' for case in ids
+            ]
+            missing.extend(path for path in paths if not path.is_file())
+            contents[output_dir / f'test_{modality}.txt'] = ''.join(
+                os.path.relpath(path, output_dir) + '\n' for path in paths)
+            test_count += len(paths)
     if missing:
         examples = '\n'.join(str(path) for path in missing[:5])
-        raise ValueError(f'Missing {len(missing)} slice/label files under '
+        raise ValueError(f'Missing {len(missing)} data files under '
                          f'{data_root}. Examples:\n{examples}')
 
     # Validate every destination before writing any lists. Preserve custom lists.
@@ -49,7 +64,8 @@ def prepare_datalists(data_root, output_dir, check=False):
             if not filename.exists():
                 filename.write_text(content)
     print(f'Checked {len(contents)} lists and '
-          f'{sum(counts.values())} image/label pairs: {output_dir}')
+          f'{sum(counts.values())} image/label pairs and '
+          f'{test_count} test volumes: {output_dir}')
 
 
 def main():
@@ -57,12 +73,17 @@ def main():
     parser.add_argument('--data-root', default='data/data_np')
     parser.add_argument('--output-dir', default='data/datalist')
     parser.add_argument(
+        '--include-test',
+        action='store_true',
+        help='Also prepare the supplied CT/MR test-volume lists')
+    parser.add_argument(
         '--check',
         action='store_true',
         help='Verify existing lists and file paths without writing')
     args = parser.parse_args()
     try:
-        prepare_datalists(args.data_root, args.output_dir, args.check)
+        prepare_datalists(args.data_root, args.output_dir, args.check,
+                          args.include_test)
     except ValueError as error:
         parser.exit(1, f'{error}\n')
 
