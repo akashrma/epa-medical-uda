@@ -7,7 +7,6 @@
 # A copy of the license is available at resources/license_segformer
 
 import math
-import numpy as np
 import torch
 import torch.nn as nn
 import warnings
@@ -18,40 +17,6 @@ from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 
 from mmseg.models.builder import BACKBONES
 from mmseg.utils import get_root_logger
-
-
-def legacy_drop_path_rates(rate, steps):
-    """Retain the frozen Torch 1.7 FP32 CPU linspace rounding.
-
-    Its AVX kernel fills eight values from a rounded chunk origin. Modern
-    linspace rounds individual values differently, changing DropPath rates.
-    See PyTorch v1.7.1 native/cpu/RangeFactoriesKernel.cpp::linspace_kernel.
-    """
-    if steps <= 1:
-        return [0.] * steps
-    end = np.float32(rate)
-    step = np.float32(end / np.float32(steps - 1))
-    rates = []
-
-    def scalar_rate(index):
-        if index < steps // 2:
-            return np.float32(step * np.float32(index))
-        # The scalar subtraction is fused in the legacy CPU binary. Round
-        # once after computing end - step * distance, then vector additions
-        # below retain their separate FP32 product/addition rounding.
-        return np.float32(float(end) - float(step) * (steps - index - 1))
-
-    # cpu_serial_kernel_vec processes pairs of eight-lane vectors, then
-    # computes the remainder with the scalar branch.
-    vector_end = steps // 16 * 16
-    for index in range(0, vector_end, 8):
-        origin = scalar_rate(index)
-        rates.extend(
-            float(np.float32(origin + step * np.float32(lane)))
-            for lane in range(8))
-    for index in range(vector_end, steps):
-        rates.append(float(scalar_rate(index)))
-    return rates
 
 
 class Mlp(nn.Module):
@@ -287,7 +252,8 @@ class MixVisionTransformer(BaseModule):
             self.freeze_patch_emb()
 
         # transformer encoder
-        dpr = legacy_drop_path_rates(drop_path_rate, sum(depths))
+        dpr = torch.linspace(
+            0, drop_path_rate, sum(depths), dtype=torch.float32).tolist()
         cur = 0
         self.block1 = nn.ModuleList([
             Block(
@@ -397,7 +363,8 @@ class MixVisionTransformer(BaseModule):
                                self.pretrained_load_info)
 
     def reset_drop_path(self, drop_path_rate):
-        dpr = legacy_drop_path_rates(drop_path_rate, sum(self.depths))
+        dpr = torch.linspace(
+            0, drop_path_rate, sum(self.depths), dtype=torch.float32).tolist()
         cur = 0
         for i in range(self.depths[0]):
             self.block1[i].drop_path.drop_prob = dpr[cur + i]

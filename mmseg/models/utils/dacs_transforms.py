@@ -148,44 +148,24 @@ def _fda_low_freq_mutate(amp_src, amp_trg, L=0.1):
     return amp_src
 
 
-def _fda_is_complex(tensor):
-    return hasattr(torch, 'is_complex') and torch.is_complex(tensor)
-
-
 def _fda_fft2(img):
-    if hasattr(torch, 'fft') and hasattr(torch.fft, 'fft2'):
-        return torch.fft.fft2(img, dim=(-2, -1))
-    return torch.rfft(img, signal_ndim=2, onesided=False)
+    return torch.fft.fft2(img, dim=(-2, -1))
 
 
 def _fda_ifft2(fft_img, spatial_shape):
-    if hasattr(torch, 'fft') and hasattr(torch.fft, 'irfft2'):
-        # Legacy irfft(..., onesided=False) performs a complex-to-real
-        # transform using the nonnegative last-axis frequencies. The corner
-        # mutation is not Hermitian symmetric, so ifft2(...).real changes FDA.
-        width = spatial_shape[-1]
-        return torch.fft.irfft2(
-            fft_img[..., :width // 2 + 1], s=spatial_shape, dim=(-2, -1))
-    return torch.irfft(
-        fft_img, signal_ndim=2, onesided=False, signal_sizes=spatial_shape)
+    # Use the real inverse on nonnegative last-axis frequencies. FDA's
+    # corner mutation is not Hermitian symmetric, so ifft2(...).real differs.
+    width = spatial_shape[-1]
+    return torch.fft.irfft2(
+        fft_img[..., :width // 2 + 1], s=spatial_shape, dim=(-2, -1))
 
 
 def _fda_extract_amp_phase(fft_img):
-    if _fda_is_complex(fft_img):
-        amp = torch.abs(fft_img)
-        pha = torch.angle(fft_img)
-    else:
-        amp = torch.sqrt(fft_img[..., 0]**2 + fft_img[..., 1]**2)
-        pha = torch.atan2(fft_img[..., 1], fft_img[..., 0])
-    return amp, pha
+    return torch.abs(fft_img), torch.angle(fft_img)
 
 
-def _fda_polar(amp, pha, like_fft):
-    if _fda_is_complex(like_fft):
-        return torch.polar(amp, pha)
-    real = amp * torch.cos(pha)
-    imag = amp * torch.sin(pha)
-    return torch.stack((real, imag), dim=-1)
+def _fda_polar(amp, pha):
+    return torch.polar(amp, pha)
 
 
 def fda_source_to_target(src_img, trg_img, L=0.1):
@@ -194,6 +174,6 @@ def fda_source_to_target(src_img, trg_img, L=0.1):
     amp_src, pha_src = _fda_extract_amp_phase(fft_src)
     amp_trg, _ = _fda_extract_amp_phase(fft_trg)
     amp_src = _fda_low_freq_mutate(amp_src, amp_trg, L=L)
-    fft_src = _fda_polar(amp_src, pha_src, fft_src)
+    fft_src = _fda_polar(amp_src, pha_src)
     src_in_trg = _fda_ifft2(fft_src, spatial_shape=src_img.shape[-2:])
     return src_in_trg

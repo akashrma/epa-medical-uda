@@ -4,38 +4,13 @@ Official Implementation for Equiangular Prototype Alignment for Unsupervised Dom
 
 **Authors**: Akash Sharma, Arunima Sarkar, Mohanasankar Sivaprakasam
 
+The current runtime uses Python 3.11, PyTorch 2.1, MMCV 2.1 and MMEngine.
+The two selected single-GPU EPA/FDA configurations have completed
+5,000-update training comparisons in both directions.
 
-## MMCV 2 migration branch
-
-All migration edits and progress are confined to **`mmcv2`**; the legacy
-stack below remains the reference for the frozen baseline. The isolated
-Python 3.11/MMCV 2.1.0 setup is documented in
-[ENVIRONMENT_MMCV2.md](ENVIRONMENT_MMCV2.md). Original medical configs now
-translate to native MMEngine training and evaluation through the existing
-launchers; commands, supported scope and resume rules are in
-[MIGRATION_STEP7.md](MIGRATION_STEP7.md). The consolidated version,
-reproduction, evaluation and checkpoint guide is
-[MIGRATION_SUPPORT.md](MIGRATION_SUPPORT.md).
-
-Both EPA/FDA directions pass short real-data CLI checks. The matched runs
-stopped at 5,000 updates while retaining the 50,000-iteration schedule.
-Cross-stack numerical checks pass for these two configurations; results and
-scope are in [MIGRATION_STEP8.md](MIGRATION_STEP8.md). The replacement MR -> CT
-legacy reference corrected an asset-path/RNG issue in the isolated checkout;
-its 5,000-update final/best evaluations are complete.
-Both modern campaigns and all planned evaluations are complete. The user
-accepted the migration on 2026-10-13 for the tested single-GPU EPA/FDA scope.
-Acceptance uses independently selected best target checkpoints, permits
-improvements, excludes source/final evaluations, and treats lower ASSD as
-better. The measured MR -> CT best-target differences are accepted deviations.
-Decision, results and scope are in
-[MIGRATION_ACCEPTANCE.md](MIGRATION_ACCEPTANCE.md); class/ASSD details are in
-[MIGRATION_METRIC_REVIEW.md](MIGRATION_METRIC_REVIEW.md).
-Precision diagnosis and the authorized FP32-convolution candidate are in
-[MIGRATION_DIAGNOSIS.md](MIGRATION_DIAGNOSIS.md) and
-[MIGRATION_PRECISION_EXPERIMENT.md](MIGRATION_PRECISION_EXPERIMENT.md).
-Original campaign execution is preserved in
-[MIGRATION_STEP9.md](MIGRATION_STEP9.md). No further accuracy runs are required.
+- [Environment and installation](ENVIRONMENT.md)
+- [Training, evaluation and resume](TRAINING.md)
+- [Recorded results and tested scope](TRAINING_RESULTS.md)
 
 ## Repository Layout
 
@@ -51,7 +26,7 @@ Original campaign execution is preserved in
 |-- pretrained/                 # root copy of pretrained weights
 |-- tools/                      # train/test utilities
 |-- run_experiments.py          # config wrapper and launcher
-`-- requirements.txt
+`-- requirements-mmcv2.lock.txt # pinned modern dependencies
 ```
 
 ## Dataset and Pretrained Models
@@ -64,47 +39,20 @@ location. The main experiment configs are in `configs/medical/`.
 
 ## Environment
 
-On `mmcv2`, use the isolated `epa-mmcv2` environment: Python 3.11.17,
-PyTorch 2.1.0+cu118, torchvision 0.16.0+cu118, MMCV 2.1.0 and MMEngine
-0.10.7. Reproducible installation and CUDA qualification are in
-[ENVIRONMENT_MMCV2.md](ENVIRONMENT_MMCV2.md); dependencies are pinned in
-`requirements-mmcv2.txt` and `requirements-mmcv2.lock.txt`.
+Install the pinned modern stack using [ENVIRONMENT.md](ENVIRONMENT.md),
+then activate it before training or evaluation:
 
 ```bash
 conda activate epa-mmcv2
 ```
 
-The selected single-GPU CT -> MR and MR -> CT EPA/FDA configurations have
-passed numerical and smoke qualification. Matched accuracy runs are complete;
-the user accepted their best-target results. Other configurations/features require separate
-qualification; the config catalogue below also includes historical experiments.
-
-### Frozen legacy reference
-
-The preserved `epa` environment and isolated legacy source use:
-
-- Python 3.8.x
-- CUDA 11.0 compatible PyTorch
-- `torch==1.7.1+cu110`
-- `torchvision==0.8.2+cu110`
-- `mmcv-full==1.3.7`
-
-Install the Python requirements from the repo root:
-
-```bash
-pip install -r requirements.txt -f https://download.pytorch.org/whl/torch_stable.html
-pip install mmcv-full==1.3.7
-```
-
-For medical metric evaluation, `medpy` is also required:
-
-```bash
-pip install medpy
-```
+`requirements-mmcv2.txt` records direct dependencies and
+`requirements-mmcv2.lock.txt` provides the full Python package lock.
+`requirements.txt` is retained as a historical legacy-stack record.
 
 ## Data
 
-The medical data is already copied into `data/data_np/`:
+Supply the medical data under `data/data_np/`:
 
 - `train_mr/`, `gt_train_mr/`
 - `train_ct/`, `gt_train_ct/`
@@ -132,7 +80,7 @@ SegFormer configs load:
 pretrained/mit_b5_mmseg.pth
 ```
 
-That file is included.
+Download this file separately; weights and datasets are excluded from Git.
 
 DeepLabV2 configs use:
 
@@ -140,7 +88,7 @@ DeepLabV2 configs use:
 open-mmlab://resnet50_v1c
 ```
 
-MMCV must be able to resolve or download that checkpoint, unless it is already cached in your environment.
+MMEngine must be able to resolve or download that checkpoint, unless it is already cached in your environment. These historical DeepLabV2 configs are outside the tested modern scope.
 
 ## Medical Configs
 
@@ -150,7 +98,7 @@ The top-level medical configs cover MR -> CT and CT -> MR UDA runs:
 find configs/medical -maxdepth 1 -name "*.py" | sort
 ```
 
-Common examples:
+Historical examples (only the two EPA/FDA configs in [TRAINING.md](TRAINING.md) are qualified on the modern stack):
 
 ```text
 configs/medical/mr2ct_selftrain_nomix_dicece_segformer_mitb5.py
@@ -169,92 +117,42 @@ configs/medical/mr2ct/
 configs/medical/ct2mr/
 ```
 
-## Training
+## Training and evaluation
 
-Run commands from the repository root.
-
-For the modern migration comparison, the sequential queue and exact
-commands are documented in [MIGRATION_STEP9.md](MIGRATION_STEP9.md).
-The original configs are translated to native MMEngine configs automatically.
-`--stop-after 5000` caps optimizer updates and retains the 50,000-step
-schedule. These launcher examples are part of the historical config catalogue.
-
-Example MR -> CT SegFormer run:
+Run from the repository root using a fresh output directory:
 
 ```bash
-python run_experiments.py --config configs/medical/mr2ct_selftrain_nomix_dicece_segformer_mitb5.py
+python tools/train.py configs/medical/ct2mr_selftrain_nomix_etf_tgt_dicece_segformer_mitb5_fda.py --work-dir work_dirs/ct2mr_epa_fda --seed 0 --stop-after 5000
 ```
 
-Example CT -> MR SegFormer run:
+For MR -> CT, use
+`configs/medical/mr2ct_selftrain_nomix_etf_tgt_dicece_segformer_mitb5_fda.py`
+and a separate work directory. The default cap is 5,000 optimizer updates;
+the configured 50,000-step LR/UDA horizon is retained. Add `--dry-run` to
+inspect resolved configs without building a model or starting GPU work.
+
+Evaluate with the same config and an actual checkpoint path:
 
 ```bash
-python run_experiments.py --config configs/medical/ct2mr_selftrain_nomix_segformer_mitb5.py
+python tools/test.py CONFIG CHECKPOINT --eval mDice --metrics-out METRICS.json
 ```
 
-Example MR -> CT MIC/FDA run:
+Resume requires a full native iteration checkpoint:
 
 ```bash
-python run_experiments.py --config configs/medical/mr2ct_selftrain_nomix_etf_tgt_dicece_segformer_mitb5_fda_mic.py
+python tools/train.py CONFIG --work-dir WORK_DIR --resume-from FULL_ITER_CHECKPOINT --stop-after 5000
 ```
 
-`run_experiments.py` writes generated child configs under `configs/generated/` and stores logs/checkpoints under `work_dirs/`.
-
-## Direct Training Entrypoint
-
-You can also bypass `run_experiments.py`:
-
-```bash
-python tools/train.py configs/medical/mr2ct_selftrain_nomix_dicece_segformer_mitb5.py
-```
-
-Use `--work-dir` to choose an output directory:
-
-```bash
-python tools/train.py configs/medical/mr2ct_selftrain_nomix_dicece_segformer_mitb5.py \
-  --work-dir work_dirs/manual_mr2ct
-```
-
-## Evaluation
-
-Evaluate a checkpoint with MMSeg's test entrypoint:
-
-```bash
-python -m tools.test CONFIG CHECKPOINT --eval mDice
-```
-
-In `epa-mmcv2`, add `--metrics-out PATH.json` to save unrounded medical
-Dice/ASSD results. Full native checkpoints and legacy student weights load
-strictly for evaluation. Source and target slice/volume protocols must match
-the intended configuration; the migration compares validation slices.
-
-Example:
-
-```bash
-python -m tools.test \
-  configs/medical/mr2ct_selftrain_nomix_dicece_segformer_mitb5.py \
-  work_dirs/local-medical/RUN_NAME/latest.pth \
-  --eval mDice
-```
-
-For configs that evaluate multiple domains, the validation results are reported with domain prefixes such as `source.mDice` and `target.mDice`.
-
-## Native training resume
-
-Use a full native iteration checkpoint with the same experiment settings:
-
-```bash
-python tools/train.py CONFIG --work-dir WORK_DIR --resume-from ITER_CHECKPOINT
-```
-
-Native checkpoints restore optimizer, scheduler, teacher/UDA counters,
-RNG and data-stream state. Under the matched nondeterministic CUDA policy,
-floating continuation can differ. Legacy and best weights checkpoints are
-for evaluation or `--load-from` initialization; they cannot resume native
-training. The fresh accuracy runs use neither resume nor load overrides.
-See [MIGRATION_STEP7.md](MIGRATION_STEP7.md) for supported CLI details.
+Best weights and legacy checkpoints support strict evaluation or
+`--load-from` initialization, but cannot resume native optimization.
+`run_experiments.py --config CONFIG` remains available as a launcher that
+writes generated configs under `configs/generated/` and runs under
+`work_dirs/`. See [TRAINING.md](TRAINING.md) for the precision policy,
+validation protocol, checkpoint selection and supported options.
 
 ## Notes
 
-- `configs/medical/*segformer*` require `pretrained/mit_b5_mmseg.pth`.
 - Medical classes are `background`, `Myo`, `LAC`, `LVC`, and `AA`.
-- `work_dirs/` and generated configs are run artifacts and are not required to start a new experiment.
+- Data, pretrained/ETF weights, generated configs and run artifacts are excluded from Git.
+- Back up `work_dirs/` separately to retain checkpoints, logs and numerical evidence.
+- The accepted migration and historical reports remain on `mmcv2` at `a05cff5`.
