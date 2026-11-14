@@ -70,7 +70,7 @@ class DACS(UDADecorator):
 
     def __init__(self, **cfg):
         super(DACS, self).__init__(**cfg)
-        # State-dict keys remain compatible with legacy weights; runtime
+        # Model tensor keys are independent of runtime state; additional
         # state is saved separately by the native checkpoint hook.
         resume_cfg = deepcopy(cfg)
         resume_cfg.pop('train_cfg', None)

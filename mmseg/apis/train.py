@@ -18,8 +18,8 @@ def train_segmentor(model,
                     meta=None):
     """Train an initialized local model with a native MMEngine config.
 
-    Legacy data/runner/optimizer configuration translation belongs to step 7.
-    Refuse untranslated settings rather than silently changing the experiment.
+    Build data, runner and optimizer settings with build_runtime_config.
+    Refuse experiment-only settings rather than silently changing them.
     The retained dataset argument is superseded by train_dataloader.dataset.
     """
     if 'train_dataloader' not in cfg or 'optim_wrapper' not in cfg:

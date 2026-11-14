@@ -13,7 +13,7 @@ if ROOT not in sys.path:
 
 from mmengine.config import Config, DictAction
 
-from mmseg.engine.config import student_config, translate_legacy_config
+from mmseg.engine.config import student_config, build_runtime_config
 from mmseg.models import build_segmentor
 
 
@@ -30,7 +30,7 @@ def main(argv=None):
     if args.options:
         cfg.merge_from_dict(args.options)
     if args.native:
-        cfg = translate_legacy_config(cfg)
+        cfg = build_runtime_config(cfg)
     print(cfg.pretty_text)
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)

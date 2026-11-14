@@ -1,4 +1,4 @@
-"""Strict student loading from legacy and native EPA checkpoints."""
+"""Strict student loading from segmentor and EPA checkpoints."""
 
 import re
 

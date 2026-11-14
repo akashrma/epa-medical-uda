@@ -10,7 +10,7 @@ from mmengine.logging import print_log
 from prettytable import PrettyTable
 
 from mmseg.core import eval_metrics
-from mmseg.core.evaluation.medical_metrics import legacy_assd as medpy_assd
+from mmseg.core.evaluation.medical_metrics import medical_assd as medpy_assd
 from mmseg.core.evaluation.medical_metrics import require_medpy
 from mmseg.utils import get_root_logger
 from .builder import DATASETS

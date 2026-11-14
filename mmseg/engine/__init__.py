@@ -1,13 +1,13 @@
 from mmseg.utils.precision_logger import PrecisionLoggerHook
-from .hooks import EPACheckpointHook, EPATrainingStateHook, LegacyPrecisionHook
+from .hooks import EPACheckpointHook, EPATrainingStateHook, PrecisionPolicyHook
 from .loops import EPAIterBasedTrainLoop
-from .optim import LegacyOptimWrapperConstructor, UDAOptimWrapper
+from .optim import EPAOptimWrapperConstructor, UDAOptimWrapper
 from .runner import EPARunner
-from .scheduler import LegacyParamSchedulerHook, LegacyPolyLR
+from .scheduler import PolyWarmupSchedulerHook, PolyWarmupLR
 
 __all__ = [
-    'EPACheckpointHook', 'EPATrainingStateHook', 'LegacyPrecisionHook',
-    'EPAIterBasedTrainLoop', 'LegacyOptimWrapperConstructor',
-    'UDAOptimWrapper', 'EPARunner', 'LegacyParamSchedulerHook', 'LegacyPolyLR',
+    'EPACheckpointHook', 'EPATrainingStateHook', 'PrecisionPolicyHook',
+    'EPAIterBasedTrainLoop', 'EPAOptimWrapperConstructor', 'UDAOptimWrapper',
+    'EPARunner', 'PolyWarmupSchedulerHook', 'PolyWarmupLR',
     'PrecisionLoggerHook'
 ]

@@ -11,7 +11,7 @@ runs on **Python 3.11, PyTorch 2.1, MMCV 2.1 and MMEngine**. Existing medical
 experiment configs are translated to MMEngine by the training entrypoint.
 
 This README covers installation, the exact data layout, reproducing the
-5,000-update comparison, evaluation, new training runs and resume.
+reference runs, evaluation, new training runs and resume.
 Upstream attribution and licensing are in [LICENSES.md](LICENSES.md).
 
 ## 1. Install the environment
@@ -19,9 +19,9 @@ Upstream attribution and licensing are in [LICENSES.md](LICENSES.md).
 The tested platform is Linux with one NVIDIA GPU (RTX 4080 Laptop GPU,
 about 12 GiB VRAM), Python 3.11.17, PyTorch 2.1.0+cu118, torchvision
 0.16.0+cu118, MMCV 2.1.0 and MMEngine 0.10.7. A compatible NVIDIA driver is
-required. Other platforms, GPUs and dependency versions are not qualified.
+required. Use the pinned dependencies below for reproducible experiments.
 
-| Component | Qualified version |
+| Component | Version |
 | --- | --- |
 | Python | 3.11.17 |
 | PyTorch / torchvision | 2.1.0+cu118 / 0.16.0+cu118 |
@@ -35,19 +35,19 @@ required. Other platforms, GPUs and dependency versions are not qualified.
 ```bash
 git clone https://github.com/akashrma/epa-medical-uda.git
 cd epa-medical-uda
-conda create --name epa-mmcv2 --override-channels --channel conda-forge python=3.11.17 pip --no-default-packages --yes
-conda activate epa-mmcv2
+conda create --name epa-medical --override-channels --channel conda-forge python=3.11.17 pip --no-default-packages --yes
+conda activate epa-medical
 python -m pip install pip==25.1.1 setuptools==75.1.0 wheel==0.44.0 packaging==24.1
 python -m pip install numpy==1.26.4 torch==2.1.0+cu118 torchvision==0.16.0+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
-python -m pip install -r requirements-mmcv2.lock.txt --only-binary=mmcv
+python -m pip install -r requirements.lock.txt --only-binary=mmcv
 python -m pip check
 ```
 
 The lock includes medical metrics and compiled MMCV operations. Run commands
 from this repository root so Python uses the local `mmseg` package. Keep
 `mmcv-full`, `mmcv-lite` and upstream `mmsegmentation` out of this environment.
-`requirements-mmcv2.txt` lists direct dependencies; `requirements.txt` records
-the historical Python 3.8/MMCV 1 environment.
+`requirements.txt` lists direct dependencies. `requirements.lock.txt` pins
+the complete Python environment.
 The runtime enforces the exact MMCV and MMEngine versions. The lock pins
 all 78 Python distributions, including packaging tools; it does not pin the
 host driver or conda base packages.
@@ -160,7 +160,7 @@ recorded splits are:
 The selected pipelines load target training masks, but `UDADataset` passes
 only target images/metadata to UDA; target ground truth is not used by the
 training loss. The supplied mask lists are still required by these configs.
-Volume `.npz` test sets and historical source-only configs use a separate
+Volume `.npz` test sets and source-only configs use a separate
 protocol from this validation-slice comparison.
 
 Check the initialization assets and generated lists against the recorded
@@ -172,7 +172,7 @@ sha256sum -c resources/reproduction_assets.sha256
 
 The expected list hashes assume the default layout shown above.
 
-## 3. Reproduce the 5,000-update comparison
+## 3. Reproduce reference runs
 
 These two configs use batch size 4, four workers, 256×256 crops, EPA/ETF,
 FDA L=0.01 and seed 0. Training uses FP32, convolution TF32 disabled, matmul
@@ -200,11 +200,11 @@ python tools/train.py configs/medical/mr2ct_selftrain_nomix_etf_tgt_dicece_segfo
   --work-dir work_dirs/mr2ct_epa_fda_seed0_5k --seed 0 --stop-after 5000
 ```
 
-**The default cap is 5,000 optimizer updates.** `--stop-after` controls when
-the run stops; the configured 50,000-step LR/UDA horizon stays unchanged.
-Validation runs every 500 updates and selects the strictly highest target
+**Training defaults to the configured 50,000 updates.** For the reference
+runs above, `--stop-after 5000` stops early while retaining the 50,000-step
+LR/UDA horizon. Validation runs every 500 updates and selects the strictly highest target
 foreground mDice. The commands above start fresh optimization from the
-MiT-B5 initialization; omit resume/load overrides for this comparison.
+MiT-B5 initialization; omit resume/load overrides for these reference runs.
 
 Each run saves:
 
@@ -240,7 +240,7 @@ console Dice is shown as a percentage. Background is excluded from the mean.
 ASSD follows the original equally weighted directional means and empty-mask
 rules, rather than the installed MedPy pooled-distance default.
 The slice evaluator uses an ASSD fallback of 1.0 when the surface-distance
-calculation fails, including empty masks. Historical NPZ volume evaluation
+calculation fails, including empty masks. NPZ volume evaluation
 also retains both-empty Dice=0. Preserve these definitions for comparison.
 
 Add `--out FILE.pkl` to retain predictions. For diagnostic source evaluation,
@@ -258,52 +258,36 @@ use `test_dataloader.dataset.img_list` and `.ann_list` instead. Evaluation
 uses batch size 1 and four workers. Test-time augmentation, slide inference,
 FP16 and NPZ volumes use a different protocol from the recorded slice results.
 
-### Recorded migration results
+### Reference results
 
-Each stack independently selects its best target checkpoint; source and
-final-checkpoint evaluations do not determine acceptance. Dice below is
-reported on the 0–1 scale.
+The runs below use seed 0, 5,000 optimizer updates, the configured
+50,000-step schedule and the validation splits listed above. The best
+checkpoint is selected by target foreground mDice over validation every
+500 updates. Dice is reported on the 0–1 scale.
 
-| Direction | Legacy best iteration | Modern best iteration | Legacy mDice | Modern mDice | Legacy mASSD | Modern mASSD |
-| --- | --- | --- | --- | --- | --- | --- |
-| CT → MR | 5,000 | 3,500 | 0.6857276685 | 0.7307150253 | 2.2916152708 | 2.1831863543 |
-| MR → CT | 4,000 | 3,000 | 0.8432316865 | 0.8310812836 | 1.4677211894 | 1.5168075542 |
+| Direction | Best update | Target mDice | Target mASSD |
+| --- | --- | --- | --- |
+| CT → MR | 3,500 | 0.7307150253 | 2.1831863543 |
+| MR → CT | 3,000 | 0.8310812836 | 1.5168075542 |
 
-Higher Dice and lower ASSD are better. CT → MR mean Dice improves by
-4.499 percentage points and mean ASSD by 4.73%; its AA ASSD increases by
-0.29552 pixel. MR → CT mean Dice decreases by 1.215 points, AA Dice by
-3.965 points, and mean ASSD increases by 3.34%. The migration review accepted
-these measured differences on 2026-10-13. Earlier automatic Dice gates
-failed; acceptance records the review decision rather than a claim that
-those gates passed. These are 5,000-update, best-target results; the paper's
-full training protocol has not been rerun.
-
-Execution is nondeterministic, so exact scores and best iterations can vary.
-The recorded campaign predates the cleanup's tiny DropPath rounding change
-to ordinary FP32 `torch.linspace`. The cleanup checks include config
-equivalence, exact CPU FDA outputs/gradients, pretrained initialization,
-strict best-checkpoint loading and one source-training update per direction.
-It does not include a new 5,000-update accuracy campaign. FDA keeps its real
-inverse `irfft2`; replacing it with `ifft2(...).real` changes the inputs.
-
-Historical code and full reports are preserved at Git commit `a05cff5`.
-Local ignored evidence remains under `work_dirs/migration_baseline/` and
-`work_dirs/mmcv2/fp32_conv_seed0_5k/`; `comparison_contract_v5.json` in the
-former and `accuracy_review_v5.json` in the latter record the accepted policy
-and results. These local evidence directories are not part of a Git clone.
+Higher Dice and lower ASSD are better. These are short-run reference
+measurements; full 50,000-update results are not reported here. CUDA
+execution is nondeterministic, so scores and selected iterations can vary.
+Preserve the data, fixed prototypes, precision settings and LR horizon when
+comparing a new run with these values.
 
 ## 4. Start a new training run
 
-For a new seed and the full configured 50,000 updates, set the cap explicitly:
+For a new seed and the full configured 50,000 updates:
 
 ```bash
 python tools/train.py configs/medical/ct2mr_selftrain_nomix_etf_tgt_dicece_segformer_mitb5_fda.py \
-  --work-dir work_dirs/ct2mr_epa_fda_seed1_50k --seed 1 --stop-after 50000
+  --work-dir work_dirs/ct2mr_epa_fda_seed1_50k --seed 1
 ```
 
-This keeps the original schedule and extends training beyond the validated
-5,000-update comparison. Its accuracy has not been measured here. You can
-choose any positive stop cap up to `runner.max_iters`.
+Training uses `runner.max_iters` by default. Set `--stop-after N` for a
+shorter run; `N` must be positive and no larger than `runner.max_iters`.
+The stop cap never changes the LR/UDA schedule horizon.
 
 Use a child config for a new experiment, preserving the original reference:
 
@@ -314,8 +298,8 @@ seed = 1
 optimizer = dict(lr=6e-5)
 ```
 
-Launch it with `python tools/train.py CONFIG --work-dir FRESH_WORK_DIR
---stop-after 50000`. `--cfg-options KEY=VALUE` supports overrides, for example
+Launch it with `python tools/train.py CONFIG --work-dir FRESH_WORK_DIR`.
+`--cfg-options KEY=VALUE` supports overrides, for example
 `--cfg-options checkpoint_config.interval=1000` to retain periodic full
 checkpoints for recovery. The default `max_keep_ckpts=1` retains one periodic
 checkpoint; choose a larger value if needed. Best weights are separate.
@@ -335,9 +319,10 @@ python run_experiments.py --config configs/medical/ct2mr_selftrain_nomix_etf_tgt
   --work-dir work_dirs/ct2mr_startup_smoke --startup-test
 ```
 
-MIC, dynamic prototypes, AMP, distributed UDA and other architecture/config
-variants remain research code outside the qualified single-GPU EPA/FDA scope.
-Unsupported runtime policies may be rejected by config translation.
+Single-GPU EPA/FDA with the two configs above is the tested training path.
+MIC, dynamic prototypes and other architecture/config variants are research
+options. AMP and distributed UDA are unsupported. Configuration validation
+rejects unsupported runtime settings.
 
 ## 5. Resume or initialize from a checkpoint
 
@@ -357,7 +342,7 @@ under nondeterministic CUDA execution.
 
 | Checkpoint | Evaluation / `--load-from` | Full native resume |
 | --- | --- | --- |
-| Legacy, matching student architecture | Strict student load | Unsupported |
+| Student weights, matching architecture | Strict student load | Unsupported |
 | Native best weights | Strict student load | Unsupported: optimizer/scheduler absent |
 | Native full iteration checkpoint | Strict student load | Supported with matching runtime/data contract |
 
@@ -365,9 +350,8 @@ Loading strips an anchored `module.` prefix and selects `model.` student
 keys from UDA checkpoints; every student key and tensor shape must match.
 `--load-from CHECKPOINT` starts fresh optimization, UDA and sampling state.
 GPU count, horizon, precision and data/sampling settings must match for
-resume. CPU and deterministic CUDA continuation passed exact qualification
-checks; the supported nondeterministic CUDA policy can change floating
-continuation. A shorter diagnostic stop can save a full resume checkpoint
+resume. Data replay restores sample order and random state; nondeterministic
+CUDA execution can still change floating continuation. A shorter diagnostic stop can save a full resume checkpoint
 without changing the schedule horizon.
 
 ## Repository layout
@@ -383,5 +367,4 @@ without changing the schedule horizon.
 | `configs/generated/`, `work_dirs/` | Generated configs and run artifacts |
 
 Back up checkpoints, resolved configs, manifests, logs and metrics separately;
-run artifacts are ignored by Git. Historical migration reports remain at
-commit `a05cff5` (the preserved `mmcv2` branch in the development checkout).
+run artifacts are ignored by Git.

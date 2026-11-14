@@ -1,4 +1,4 @@
-"""Medical metric definitions matching the frozen MedPy 0.4.0 baseline."""
+"""Medical surface-distance and volume Dice definitions."""
 
 import numpy as np
 
@@ -8,10 +8,8 @@ except ImportError:
     asd = None
 
 
-def legacy_assd(result, reference, voxelspacing=None, connectivity=1):
-    """Average the two directional means, as MedPy 0.4.0 did.
-
-    MedPy 0.5 pools surface distances instead, weighting by surface size.
+def medical_assd(result, reference, voxelspacing=None, connectivity=1):
+    """Average the two directional surface-distance means with equal weight.
     Keep voxel units/default connectivity and let the dataset preserve its
     existing exception-to-1.0 behavior for empty/invalid masks.
     """
@@ -26,8 +24,8 @@ def require_medpy():
         raise ImportError('medpy is required to compute ASSD metrics')
 
 
-def legacy_dc(result, reference):
-    """Binary Dice with MedPy 0.4.0's both-empty value of zero."""
+def volume_dice(result, reference):
+    """Binary Dice with a both-empty value of zero."""
     result = np.atleast_1d(np.asarray(result).astype(np.bool_))
     reference = np.atleast_1d(np.asarray(reference).astype(np.bool_))
     denominator = np.count_nonzero(result) + np.count_nonzero(reference)

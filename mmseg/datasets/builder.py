@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 
 from mmseg.registry import DATASETS, TRANSFORMS
 from .collate import uda_collate
-from .samplers import LegacyRandomSampler
+from .samplers import RandomSliceSampler
 
 if platform.system() != 'Windows':
     # https://github.com/pytorch/pytorch/issues/973
@@ -116,13 +116,13 @@ def build_dataloader(dataset,
         drop_last (bool): Whether to drop the last incomplete batch in epoch.
             Default: False
         pin_memory (bool): Whether to use pin_memory in DataLoader.
-            Legacy request retained for config compatibility (default True).
-            Effective pinning is disabled, matching unpinned DataContainers.
+            Accepted for config compatibility (default True). Effective pinning
+            is disabled to keep CPU metadata tuple types unchanged.
         persistent_workers (bool): If True, the data loader will not shutdown
             the worker processes after a dataset has been consumed once.
             This allows to maintain the workers Dataset instances alive.
             The argument also has effect in PyTorch>=1.7.0.
-            Default: False, matching the frozen PyTorch 1.7 loader.
+            Default: False for replayable worker initialization.
         kwargs: any keyword argument to be used to initialize DataLoader
 
     Returns:
@@ -136,7 +136,7 @@ def build_dataloader(dataset,
         batch_size = samples_per_gpu
         num_workers = workers_per_gpu
     else:
-        sampler = LegacyRandomSampler(dataset) if shuffle else None
+        sampler = RandomSliceSampler(dataset) if shuffle else None
         shuffle = False
         batch_size = num_gpus * samples_per_gpu
         num_workers = num_gpus * workers_per_gpu
@@ -151,9 +151,7 @@ def build_dataloader(dataset,
         sampler=sampler,
         num_workers=num_workers,
         collate_fn=uda_collate,
-        # Legacy DataContainers were never pinned by Torch's recursive
-        # pinning. Disabling it preserves effective behavior and avoids
-        # converting CPU metadata tuples to lists on CUDA hosts.
+        # Keep CPU metadata tuples unchanged during device transfer.
         pin_memory=False,
         shuffle=shuffle,
         worker_init_fn=init_fn,
@@ -164,7 +162,7 @@ def build_dataloader(dataset,
     return data_loader
 
 
-@FUNCTIONS.register_module(name='legacy_worker_init')
+@FUNCTIONS.register_module(name='seed_data_worker')
 def worker_init_fn(worker_id, num_workers, rank, seed):
     """Worker init func for dataloader.
 

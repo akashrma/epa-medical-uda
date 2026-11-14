@@ -1,4 +1,4 @@
-# Qualified with Python 3.11.17, Linux x86_64; see README.md.
+# Pinned dependencies for Python 3.11.17, Linux x86_64; see README.md.
 --extra-index-url https://download.pytorch.org/whl/cu118
 --find-links https://download.openmmlab.com/mmcv/dist/cu118/torch2.1.0/index.html
 

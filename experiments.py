@@ -246,7 +246,7 @@ def generate_experiment_cfgs(id):
             samples_per_gpu=batch_size,
             workers_per_gpu=workers_per_gpu,
             train={})
-        # DAFormer legacy cropping that only works properly if the training
+        # DAFormer independent cropping that only works properly if the training
         # crop has the height of the (resized) target image.
         if ('dacs' in uda or mask_mode is not None) and plcrop in [True, 'v1']:
             cfg.setdefault('uda', {})

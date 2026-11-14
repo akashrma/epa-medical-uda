@@ -52,7 +52,7 @@ def _dataset_signature(dataset):
     return signature
 
 
-def loader_signature(loader):
+def loader_signature(loader, sampler_type=None):
     init = loader.worker_init_fn
     function = getattr(init, 'func', init)
     signature = dict(
@@ -62,7 +62,7 @@ def loader_signature(loader):
         num_workers=loader.num_workers,
         persistent_workers=loader.persistent_workers,
         pin_memory=loader.pin_memory,
-        sampler=type(loader.sampler).__name__,
+        sampler=sampler_type or type(loader.sampler).__name__,
         worker_init=getattr(function, '__qualname__', None),
         worker_kwargs=getattr(init, 'keywords', None))
     return hashlib.sha256(
@@ -78,14 +78,14 @@ class ReplayDataIterator:
     workers, advance indices only, avoiding additional dataset random draws.
     Then restore checkpoint-time parent RNG before fetching the next batch.
     Private iterator access is limited to pinned Torch 2.1's zero-worker
-    sampler iterator and worker shutdown; both paths are qualified explicitly.
+    sampler iterator and worker shutdown.
     """
 
-    def __init__(self, loader, state=None):
+    def __init__(self, loader, state=None, saved_sampler_type=None):
         if loader.persistent_workers or loader.generator is not None or \
                 getattr(loader.sampler, 'generator', None) is not None:
             raise ValueError('Resume requires nonpersistent workers and '
-                             'the legacy global loader generator')
+                             'the global loader RNG')
         self.loader = loader
         self.signature = loader_signature(loader)
         self.epoch = 0
@@ -94,7 +94,12 @@ class ReplayDataIterator:
         if state is None:
             self._start_epoch()
         else:
-            if state['signature'] != self.signature:
+            # Class names can change without changing the sampling policy.
+            # Compare every loader setting using the saved name as well.
+            signatures = {self.signature}
+            if saved_sampler_type:
+                signatures.add(loader_signature(loader, saved_sampler_type))
+            if state['signature'] not in signatures:
                 raise ValueError('Checkpoint data-loader contract differs')
             parent_rng = capture_rng_state()
             self.epoch = state['epoch']

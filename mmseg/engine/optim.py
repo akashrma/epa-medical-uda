@@ -12,13 +12,13 @@ class UDAOptimWrapper(OptimWrapper):
 
     def __init__(self, optimizer, accumulative_counts=1, **kwargs):
         if accumulative_counts != 1:
-            raise ValueError('The parity port requires one update per batch')
+            raise ValueError('UDA requires one optimizer update per batch')
         super().__init__(optimizer, accumulative_counts=1, **kwargs)
 
     @property
     def param_groups(self):
         # Native wrappers add a synthetic group to track a default LR.
-        # Schedule only the actual legacy named-parameter groups.
+        # Schedule only the actual named-parameter groups.
         return self.optimizer.param_groups
 
     def get_lr(self):
@@ -40,10 +40,10 @@ class UDAOptimWrapper(OptimWrapper):
 
 
 @OPTIM_WRAPPER_CONSTRUCTORS.register_module()
-class LegacyOptimWrapperConstructor(DefaultOptimWrapperConstructor):
+class EPAOptimWrapperConstructor(DefaultOptimWrapperConstructor):
     """Preserve every named parameter, including detached EMA parameters.
 
-    Only the selected AdamW/custom-key contract is qualified. Custom keys
+    AdamW custom keys
     use MMCV's longest-match/alphabetical tie order. No blanket bias or BN
     decay exclusions are introduced. The group order matches named_parameters.
     """
@@ -52,12 +52,12 @@ class LegacyOptimWrapperConstructor(DefaultOptimWrapperConstructor):
         config = deepcopy(optim_wrapper_cfg)
         optimizer = config['optimizer']
         if optimizer['type'] != 'AdamW':
-            raise ValueError('The qualified optimizer is AdamW')
+            raise ValueError('Expected the AdamW optimizer')
         optimizer.setdefault('eps', 1e-8)
         optimizer.setdefault('amsgrad', False)
         optimizer.update(foreach=False, fused=False)
         if set(paramwise_cfg or {}) - {'custom_keys'}:
-            raise ValueError('Only the frozen custom-key policy is qualified')
+            raise ValueError('Parameter grouping supports custom_keys only')
         super().__init__(config, paramwise_cfg)
 
     def add_params(self, params, module, prefix='', **kwargs):

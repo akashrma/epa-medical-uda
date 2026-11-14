@@ -10,7 +10,7 @@ def _find_repo_root(start_dir):
     cur = os.path.abspath(start_dir)
     for _ in range(6):
         # AGENTS.md is an optional, ignored workspace file. Repository assets
-        # must resolve identically in a clean checkout or a frozen snapshot.
+        # must resolve from the repository without workspace-specific files.
         if os.path.isfile(os.path.join(cur, 'README.md')) and os.path.isdir(
                 os.path.join(cur, 'configs', '_base_')):
             return cur

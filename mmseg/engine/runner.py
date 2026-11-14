@@ -1,4 +1,4 @@
-"""MMEngine Runner preserving legacy CPU initialization and safe resume."""
+"""MMEngine runner with seeded CPU initialization and full-state resume."""
 
 import torch
 from copy import deepcopy
@@ -37,12 +37,11 @@ class EPARunner(Runner):
             self._provided_model_rng = None
         if not is_model_wrapper(model) and not getattr(model, '_is_init',
                                                        False):
-            # Legacy initialized on CPU then transferred to GPU; doing native
-            # CUDA initialization first changes the seed-0 head weights.
+            # Initialize on CPU before device transfer so seeded weights do
+            # not depend on the CUDA initialization RNG stream.
             model.init_weights()
         if self.distributed and hasattr(model, 'get_training_state'):
-            raise NotImplementedError('Multi-rank UDA is not qualified; '
-                                      'the matched baselines use one GPU')
+            raise NotImplementedError('Distributed UDA is unsupported')
         return super().wrap_model(model_wrapper_cfg, model)
 
     def _init_model_weights(self):

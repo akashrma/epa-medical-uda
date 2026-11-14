@@ -1,6 +1,6 @@
 # Obtained from: https://github.com/open-mmlab/mmsegmentation/tree/v0.16.0
 # Modifications:
-# - Modification of config and checkpoint to support legacy models
+# - Normalize model configs and checkpoint tensor keys
 # - Add inference mode and HRDA output flag
 
 import argparse
@@ -85,13 +85,13 @@ def _replace_val_with_test(cfg_node):
                 dataset_cfg[k] = v.replace('val', 'test')
 
 
-def update_legacy_cfg(cfg):
+def normalize_test_config(cfg):
     # The saved json config does not differentiate between list and tuple
     for dataset_cfg in _iter_dataset_cfgs(cfg.data.get('test', [])):
         _fix_img_scale_tuple(dataset_cfg)
     for dataset_cfg in _iter_dataset_cfgs(cfg.data.get('val', [])):
         _fix_img_scale_tuple(dataset_cfg)
-    # Support legacy checkpoints
+    # Normalize checkpoint architecture names
     if cfg.model.decode_head.type == 'UniHead':
         cfg.model.decode_head.type = 'DAFormerHead'
         cfg.model.decode_head.decoder_params.fusion_cfg.pop('fusion', None)
@@ -225,7 +225,7 @@ def main(argv=None):
             dist_params=cfg.get('dist_params', {}),
             cudnn_benchmark=cfg.get('cudnn_benchmark', True),
             fp16=cfg.get('fp16')))
-    cfg = update_legacy_cfg(cfg)
+    cfg = normalize_test_config(cfg)
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = False
     # set cudnn_benchmark
@@ -292,8 +292,7 @@ def main(argv=None):
     cfg.model.train_cfg = None
     model = build_segmentor(cfg.model, test_cfg=cfg.get('test_cfg'))
     if cfg.get('fp16') is not None:
-        raise ValueError(
-            'FP16 inference is not qualified for matched accuracy')
+        raise ValueError('FP16 inference is unsupported; use FP32')
     checkpoint = load_student_checkpoint(model, args.checkpoint)
     set_checkpoint_metadata(model, checkpoint, dataset)
     model.to(args.device).eval()

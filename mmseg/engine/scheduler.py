@@ -1,6 +1,6 @@
 # Adapted from MMCV v1.3.7 mmcv/runner/hooks/lr_updater.py.
 # Copyright (c) OpenMMLab. All rights reserved.
-"""Native scheduler with the exact frozen polynomial/warmup arithmetic."""
+"""Polynomial LR decay with overlapping linear warmup."""
 
 from mmengine.hooks import Hook
 from mmengine.optim.scheduler import _ParamScheduler
@@ -9,7 +9,7 @@ from mmseg.registry import HOOKS, PARAM_SCHEDULERS
 
 
 @PARAM_SCHEDULERS.register_module()
-class LegacyPolyLR(_ParamScheduler):
+class PolyWarmupLR(_ParamScheduler):
 
     def __init__(self,
                  optimizer,
@@ -58,13 +58,13 @@ class LegacyPolyLR(_ParamScheduler):
 
 
 @HOOKS.register_module()
-class LegacyParamSchedulerHook(Hook):
+class PolyWarmupSchedulerHook(Hook):
     priority = 'HIGHEST'
 
     def before_train_iter(self, runner, batch_idx, data_batch=None):
-        # Keep the last *used* LR in checkpoints, like the legacy hook.
+        # Keep the last used LR in checkpoints.
         # RuntimeInfoHook then records this iteration's current LR.
         for scheduler in runner.param_schedulers or []:
-            if not isinstance(scheduler, LegacyPolyLR):
-                raise TypeError('Expected the qualified LegacyPolyLR')
+            if not isinstance(scheduler, PolyWarmupLR):
+                raise TypeError('Expected PolyWarmupLR')
             scheduler.set_iteration(runner.iter)

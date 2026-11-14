@@ -18,7 +18,7 @@ assert (mmcv_min_version <= mmcv_version <= mmcv_max_version), (
 
 assert digit_version(
     mmengine.__version__) == digit_version(MMENGINE_VERSION), (
-        f'MMEngine=={mmengine.__version__} is used but unqualified. '
+        f'MMEngine=={mmengine.__version__} is unsupported. '
         f'Please install mmengine=={MMENGINE_VERSION}.')
 
 __all__ = ['__version__', 'version_info']

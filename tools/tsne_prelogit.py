@@ -139,7 +139,8 @@ def build_model(cfg, checkpoint_path, dataset, device='cuda'):
     model_cfg['pretrained'] = None
     model_cfg['train_cfg'] = None
     if cfg.get('fp16') is not None:
-        raise ValueError('FP16 representation analysis is not qualified')
+        raise ValueError(
+            'FP16 representation analysis is unsupported; use FP32')
     model = build_segmentor(model_cfg)
     checkpoint = load_student_checkpoint(model, checkpoint_path)
     set_checkpoint_metadata(model, checkpoint, dataset)

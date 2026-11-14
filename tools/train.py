@@ -24,7 +24,7 @@ from mmengine.config import Config, DictAction
 from mmengine.utils import get_git_hash
 
 from mmseg.engine import EPARunner
-from mmseg.engine.config import translate_legacy_config
+from mmseg.engine.config import build_runtime_config
 from mmseg.utils.collect_env import gen_code_archive
 
 
@@ -43,7 +43,7 @@ def parse_args(args=None):
     parser.add_argument(
         '--stop-after',
         type=int,
-        help='Update cap; default 5000, horizon unchanged')
+        help='Optional update cap; defaults to the configured horizon')
     parser.add_argument(
         '--dry-run',
         action='store_true',
@@ -77,22 +77,22 @@ def main(args=None):
             for split in ('train', 'val', 'test'):
                 loader = original.get(split + '_dataloader')
                 if loader and loader.get('worker_init_fn', {}).get('type') \
-                        == 'legacy_worker_init':
+                        == 'seed_data_worker':
                     loader.worker_init_fn.seed = args.seed
-            if original.get('migration'):
-                original.migration.legacy_config.seed = args.seed
+            if original.get('experiment_spec'):
+                original.experiment_spec.seed = args.seed
         else:
             original.seed = args.seed
     if args.deterministic:
-        raise ValueError('Matched legacy training uses nondeterministic CUDA')
+        raise ValueError('The training precision policy is nondeterministic')
     gpu_ids = args.gpu_ids or list(range(args.gpus or 1))
     if len(gpu_ids) != 1 or args.gpus == 0:
-        raise ValueError('Matched training requires one GPU')
+        raise ValueError('Training requires one GPU')
     if not native_input:
         original.gpu_ids = gpu_ids
     work_dir = args.work_dir or original.get('work_dir') or \
         str(Path('work_dirs') / Path(args.config).stem)
-    cfg = translate_legacy_config(
+    cfg = build_runtime_config(
         original,
         work_dir=work_dir,
         stop_after=args.stop_after,
@@ -109,8 +109,8 @@ def main(args=None):
     output = Path(cfg.work_dir)
     output.mkdir(parents=True, exist_ok=True)
     # Distinct names retain the original specification and the native runtime.
-    specification = Config(original.migration.legacy_config) \
-        if native_input and original.get('migration') else original
+    specification = Config(original.experiment_spec) \
+        if native_input and original.get('experiment_spec') else original
     specification.dump(str(output / 'experiment_spec.py'))
     cfg.dump(str(output / 'native_config.py'))
     manifest = dict(
@@ -135,7 +135,7 @@ def main(args=None):
         return cfg
     os.environ.setdefault('LOCAL_RANK', str(args.local_rank))
     if not torch.cuda.is_available():
-        raise RuntimeError('Matched training requires a visible CUDA GPU')
+        raise RuntimeError('Training requires a visible CUDA GPU')
     torch.cuda.set_device(gpu_ids[0])
     gen_code_archive(str(output))
     runner = EPARunner.from_cfg(cfg)

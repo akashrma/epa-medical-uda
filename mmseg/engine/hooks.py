@@ -1,6 +1,7 @@
 """Native precision and complete training-state checkpoint hooks."""
 
 import torch
+from mmengine.config import Config
 from mmengine.hooks import CheckpointHook, Hook
 
 from mmseg.registry import HOOKS
@@ -17,14 +18,14 @@ def backend_flags():
 
 
 @HOOKS.register_module()
-class LegacyPrecisionHook(Hook):
+class PrecisionPolicyHook(Hook):
     priority = 'HIGHEST'
 
     def before_run(self, runner):
         torch.backends.cudnn.benchmark = True
         torch.backends.cudnn.deterministic = False
-        # Precision candidate: suppress near-zero decoder gradient noise.
-        # Matmul TF32 and the original benchmark policy remain enabled.
+        # Use FP32 convolutions to limit decoder gradient noise.
+        # Matmul TF32 and cuDNN benchmark remain enabled.
         torch.backends.cudnn.allow_tf32 = False
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.use_deterministic_algorithms(False)
@@ -59,7 +60,7 @@ class EPATrainingStateHook(Hook):
             return  # Explicit weights initialization.
         state = checkpoint.get('epa_training')
         if not state or state.get('version') != 1:
-            raise ValueError('Legacy/weights-only checkpoints cannot resume '
+            raise ValueError('Weights-only checkpoints cannot resume '
                              'native training; use weights initialization')
         if not {'optimizer', 'param_schedulers'}.issubset(checkpoint):
             raise ValueError('Resume needs optimizer and scheduler state')
@@ -73,7 +74,7 @@ class EPATrainingStateHook(Hook):
             if model.local_iter != checkpoint['meta']['iter']:
                 raise ValueError('Runner and UDA iteration counters differ')
         # Resize lazily allocated dynamic-prototype buffers before native
-        # state_dict loading. Fixed EPA and EMA/BN weights keep legacy keys.
+        # state_dict loading. Fixed EPA and EMA/BN tensor keys remain unchanged.
         for name in ('source_prototypes', 'source_proto_valid',
                      'source_proto_seen'):
             if name in checkpoint['state_dict']:
@@ -90,6 +91,12 @@ class EPATrainingStateHook(Hook):
             p.grad = torch.zeros_like(p) if name in names else None
         runner.train_loop.resume_data_state = state['data']
         runner.train_loop.resume_rng_state = state['rng']
+        saved_config = checkpoint.get('meta', {}).get('cfg')
+        if saved_config:
+            saved_config = Config.fromstring(saved_config, '.py')
+            sampler = saved_config.get('train_dataloader',
+                                       {}).get('sampler', {})
+            runner.train_loop.resume_sampler_type = sampler.get('type')
 
 
 @HOOKS.register_module()

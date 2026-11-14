@@ -1,4 +1,4 @@
-"""Checked translation of legacy medical experiment specifications."""
+"""Build MMEngine runtime settings from medical experiment configurations."""
 
 from copy import deepcopy
 from pathlib import Path
@@ -33,7 +33,7 @@ def _medical_dataset(config):
         _medical_dataset(config['source'])
         _medical_dataset(config['target'])
     elif config['type'] not in ('MedNpyListDataset', 'MedNpzVolumeDataset'):
-        raise ValueError('Only the local medical datasets are qualified; '
+        raise ValueError('Expected a supported medical dataset; '
                          f'got {config["type"]}')
 
 
@@ -49,34 +49,36 @@ def _loader(dataset, batch_size, workers, seed, training=False):
         drop_last=training,
         pin_memory=False,
         persistent_workers=False,
-        sampler=dict(type='LegacyRandomSampler') if training else dict(
+        sampler=dict(type='RandomSliceSampler') if training else dict(
             type='DefaultSampler', shuffle=False),
         collate_fn=dict(type='uda_collate'),
         worker_init_fn=dict(
-            type='legacy_worker_init', num_workers=workers, rank=0, seed=seed))
+            type='seed_data_worker', num_workers=workers, rank=0, seed=seed))
 
 
-def translate_legacy_config(cfg,
-                            work_dir=None,
-                            stop_after=None,
-                            validate=True,
-                            launcher='none'):
-    """Translate the qualified medical contract without mutating its source.
+def build_runtime_config(cfg,
+                         work_dir=None,
+                         stop_after=None,
+                         validate=True,
+                         launcher='none'):
+    """Build the runtime configuration without mutating the experiment.
 
     Native configs pass through with runtime path/cap adjustments. Unsupported
-    legacy runtime policies raise instead of silently losing their behavior.
-    The default cap is the user-requested 5000; max_iters remains the horizon.
+    settings raise instead of silently losing their behavior. Training uses
+    the configured horizon unless an explicit stop cap is supplied.
     """
     cfg = deepcopy(cfg.to_dict() if isinstance(cfg, Config) else dict(cfg))
     if launcher != 'none':
-        raise NotImplementedError('Matched medical training uses one GPU; '
-                                  'multi-rank UDA is not qualified')
+        raise NotImplementedError('Medical UDA training supports one GPU')
     if 'train_dataloader' in cfg:
         native = Config(cfg)
         if work_dir is not None:
             native.work_dir = str(work_dir)
         if stop_after is not None:
             native.train_cfg.stop_after = stop_after
+        else:
+            native.train_cfg.setdefault('stop_after',
+                                        native.train_cfg.max_iters)
         if not 0 < native.train_cfg.stop_after <= native.train_cfg.max_iters:
             raise ValueError('Stop cap must be positive and within max_iters')
         model = native.model.model if native.model.type == 'DACS' else \
@@ -103,21 +105,21 @@ def translate_legacy_config(cfg,
                                 for k in cfg if k.startswith('name_')},
                 'top-level')
     if cfg.get('workflow', [('train', 1)]) != [('train', 1)]:
-        raise ValueError('Only the iteration training workflow is qualified')
+        raise ValueError('Training requires an iteration-based workflow')
     if cfg.get('deterministic', False):
-        raise ValueError('Matched legacy precision is nondeterministic')
+        raise ValueError('The training precision policy is nondeterministic')
     if not cfg.get('cudnn_benchmark', False):
-        raise ValueError('The qualified legacy policy enables cudnn_benchmark')
+        raise ValueError('Training requires cudnn_benchmark=True')
     if cfg.get('optimizer_config') not in (None, {}):
-        raise ValueError('Optimizer hooks/clipping/AMP require qualification')
+        raise ValueError('Optimizer hooks, clipping and AMP are unsupported')
     if len(cfg.get('gpu_ids', [0])) != 1:
-        raise ValueError('Only one GPU is qualified')
+        raise ValueError('Training supports one GPU')
     runner = cfg['runner']
     _check_keys(runner, ('type', 'max_iters'), 'runner')
     if runner['type'] != 'IterBasedRunner':
-        raise ValueError('Only IterBasedRunner is qualified')
+        raise ValueError('Expected IterBasedRunner')
     horizon = int(runner['max_iters'])
-    cap = min(5000, horizon) if stop_after is None else int(stop_after)
+    cap = horizon if stop_after is None else int(stop_after)
     if not 0 < cap <= horizon:
         raise ValueError('Stop cap must be positive and within max_iters')
     lr = cfg['lr_config']
@@ -125,7 +127,7 @@ def translate_legacy_config(cfg,
                      'power', 'min_lr', 'by_epoch'), 'learning-rate')
     if lr['policy'].lower() != 'poly' or lr.get('warmup') != 'linear' or \
             lr.get('by_epoch', False):
-        raise ValueError('Only iteration poly with linear warmup is qualified')
+        raise ValueError('Expected iteration poly LR with linear warmup')
     evaluation = cfg.get('evaluation', {})
     _check_keys(evaluation, ('interval', 'metric', 'save_best', 'rule'),
                 'evaluation')
@@ -146,9 +148,9 @@ def translate_legacy_config(cfg,
     _check_keys(log, ('interval', 'img_interval', 'hooks'), 'logging')
     backends = [dict(type='LocalVisBackend')]
     for hook in log['hooks']:
-        _check_keys(hook, ('type', 'by_epoch'), 'legacy logger')
+        _check_keys(hook, ('type', 'by_epoch'), 'logger')
         if hook.get('by_epoch', False):
-            raise ValueError('Epoch logging is not qualified')
+            raise ValueError('Logging must be iteration based')
         if hook['type'] == 'TensorboardLoggerHook':
             backends.append(dict(type='TensorboardVisBackend'))
         elif hook['type'] not in ('TextLoggerHook', 'PrecisionLoggerHook'):
@@ -171,12 +173,12 @@ def translate_legacy_config(cfg,
     if 'uda' in cfg:
         wrapper = deepcopy(cfg['uda'])
         if wrapper['type'] != 'DACS':
-            raise ValueError('Only the local DACS UDA contract is qualified')
+            raise ValueError('Expected the DACS UDA model')
         wrapper.update(model=model, max_iters=horizon)
         model = wrapper
     optimizer = deepcopy(cfg['optimizer'])
     if optimizer['type'] != 'AdamW':
-        raise ValueError('Only AdamW is qualified')
+        raise ValueError('Training supports the AdamW optimizer')
     paramwise = optimizer.pop('paramwise_cfg', {})
     val = _loader(data['val'], 1, workers, seed)
     test = _loader(data['test'], 1, workers, seed)
@@ -210,11 +212,11 @@ def translate_legacy_config(cfg,
                 prefix='target'),
             optim_wrapper=dict(
                 type='UDAOptimWrapper',
-                constructor='LegacyOptimWrapperConstructor',
+                constructor='EPAOptimWrapperConstructor',
                 optimizer=optimizer,
                 paramwise_cfg=paramwise),
             param_scheduler=dict(
-                type='LegacyPolyLR',
+                type='PolyWarmupLR',
                 total_iters=horizon,
                 power=lr.get('power', 1.),
                 min_lr=lr.get('min_lr', 0.),
@@ -222,7 +224,7 @@ def translate_legacy_config(cfg,
                 warmup_ratio=lr.get('warmup_ratio', 1e-6),
                 by_epoch=False),
             default_hooks=dict(
-                param_scheduler=dict(type='LegacyParamSchedulerHook'),
+                param_scheduler=dict(type='PolyWarmupSchedulerHook'),
                 checkpoint=dict(
                     type='EPACheckpointHook',
                     by_epoch=False,
@@ -238,7 +240,7 @@ def translate_legacy_config(cfg,
                     interval=log['interval'],
                     log_metric_by_epoch=False)),
             custom_hooks=[
-                dict(type='LegacyPrecisionHook'),
+                dict(type='PrecisionPolicyHook'),
                 dict(type='EPATrainingStateHook')
             ],
             randomness=dict(seed=seed, deterministic=False),
@@ -252,10 +254,5 @@ def translate_legacy_config(cfg,
                 type='Visualizer', _scope_='mmengine', vis_backends=backends),
             load_from=cfg.get('resume_from') or cfg.get('load_from'),
             resume=bool(cfg.get('resume_from')),
-            migration=dict(
-                version=1,
-                legacy_config=cfg,
-                effective_pin_memory=False,
-                precision='FP32 convolutions; matmul TF32 and legacy '
-                'benchmark policy retained')))
+            experiment_spec=cfg))
     return native

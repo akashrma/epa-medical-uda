@@ -17,7 +17,7 @@ class EPAIterBasedTrainLoop(IterBasedTrainLoop):
                  runner,
                  dataloader,
                  max_iters=50000,
-                 stop_after=5000,
+                 stop_after=None,
                  val_begin=1,
                  val_interval=500):
         # Native IterBasedTrainLoop eagerly starts loader workers. Defer that
@@ -27,6 +27,8 @@ class EPAIterBasedTrainLoop(IterBasedTrainLoop):
         self._max_iters = int(max_iters)
         self._max_epochs = 1
         self._epoch = self._iter = 0
+        if stop_after is None:
+            stop_after = self._max_iters
         if not 0 < stop_after <= self._max_iters:
             raise ValueError('Stop cap must be within the configured horizon')
         self.stop_after = int(stop_after)
@@ -36,6 +38,7 @@ class EPAIterBasedTrainLoop(IterBasedTrainLoop):
         self.dataloader_iterator = None
         self.resume_data_state = None
         self.resume_rng_state = None
+        self.resume_sampler_type = None
         if hasattr(self.dataloader.dataset, 'metainfo'):
             runner.visualizer.dataset_meta = self.dataloader.dataset.metainfo
 
@@ -48,7 +51,8 @@ class EPAIterBasedTrainLoop(IterBasedTrainLoop):
         if self.resume_rng_state is not None:
             restore_rng_state(self.resume_rng_state)
         self.dataloader_iterator = ReplayDataIterator(self.dataloader,
-                                                      self.resume_data_state)
+                                                      self.resume_data_state,
+                                                      self.resume_sampler_type)
         try:
             while self._iter < self.stop_after and not self.stop_training:
                 self.runner.model.train()
