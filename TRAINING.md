@@ -17,9 +17,12 @@ prototypes, AMP, distributed UDA, other FDA geometries, other configs and
 50,000-update accuracy have not been qualified. The wider config catalogue
 is retained for research; translation rejects unsupported runtime settings.
 
-Supply slice arrays under `data/data_np/`, lists under `data/datalist/`,
-`pretrained/mit_b5_mmseg.pth` and the ETF assets declared by the configs.
-These assets are excluded from Git. See [README.md](README.md) for downloads.
+Supply slice arrays under `data/data_np/` and initialization weights at
+`pretrained/mit_b5_mmseg.pth`; run `python tools/prepare_medical_datalists.py`
+to create the exact ordered train/validation lists under `data/datalist/`.
+The fixed ETF assets are tracked in Git and should be preserved. Arrays,
+datalists and large weights remain local. See [README.md](README.md) for the
+download link, layout and `resources/reproduction_assets.sha256` checksums.
 
 ## Train
 
@@ -34,6 +37,13 @@ runs. The default update cap is 5,000. `--stop-after` changes the cap while
 preserving the configured `max_iters=50000` LR/UDA horizon. Validation runs
 every 500 updates. The periodic full-checkpoint interval is 50,000, and a
 full checkpoint is also saved at the stop cap.
+
+For a fresh full-length experiment, pass `--stop-after 50000` explicitly.
+For example, use `--seed 1 --stop-after 50000` with a new work directory.
+The 50,000-update path retains the configured schedule; its accuracy has not
+been qualified. `--cfg-options checkpoint_config.interval=1000` can save
+periodic full checkpoints for recovery. The default `max_keep_ckpts=1`
+retains one periodic checkpoint; adjust that setting if needed.
 
 Training/evaluation use FP32 storage, convolution TF32 disabled, matmul TF32
 enabled, cuDNN benchmark enabled and nondeterministic CUDA execution. The

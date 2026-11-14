@@ -86,6 +86,6 @@ original spacing/connectivity defaults and empty-mask fallback. MedPy
 also preserves the original both-empty Dice value of zero. Keep the local
 adapter when reproducing the [recorded results](TRAINING_RESULTS.md).
 
-The historical Python 3.8/MMCV 1 environment and migration evidence remain
-available on the `mmcv2` branch at `a05cff5`; `requirements.txt` is retained
-as its legacy dependency record. Use the modern lock above for this branch.
+Historical environment instructions and migration reports remain in Git at
+`a05cff5`; `requirements.txt` is retained as the legacy dependency record.
+Use the modern lock above for the current runtime.

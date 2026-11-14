@@ -38,7 +38,9 @@ the accepted campaign outcome and does not claim those gates passed.
 Environment/CUDA operations, initialization, optimizer groups, data and
 evaluator parity, UDA ordering, LR curves, native checkpoint/resume behavior,
 entrypoints and scoped numerical checks were qualified during migration.
-The complete historical code and reports remain on `mmcv2` at `a05cff5`.
+The complete historical code and reports remain in Git at `a05cff5` (also
+preserved on the local development branch `mmcv2`). This commit is an
+ancestor of the published modern code.
 
 Local ignored evidence is retained under:
 
